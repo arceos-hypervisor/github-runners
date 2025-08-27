@@ -710,7 +710,7 @@ case "$CMD" in
     if [[ $# -ge 1 ]]; then
       for s in "$@"; do
         if ! docker_container_exists "$s"; then
-          shell_warn "未找到 $s 对应的 Runner 容器，忽略该项！"
+          shell_warn "未找到 $s 对应的 Runner 容器，忽略该参数！"
           continue
         fi
         idx="${s##*-}"
@@ -746,7 +746,7 @@ case "$CMD" in
     if [[ $# -ge 1 ]]; then
       for s in "$@"; do
         if ! docker_container_exists "$s"; then
-          shell_warn "未找到 $s 对应的 Runner 容器，忽略该项！"
+          shell_warn "未找到 $s 对应的 Runner 容器，忽略该参数！"
           continue
         fi
         ids+=("$s")
@@ -812,7 +812,7 @@ case "$CMD" in
       ids=(); max_id=0
       for s in "$@"; do
         if ! docker_container_exists "$s"; then
-          shell_warn "未找到 $s 对应的 Runner 容器，忽略该项！"
+          shell_warn "未找到 $s 对应的 Runner 容器，忽略该参数！"
           continue
         fi
         ids+=("$s")
@@ -851,7 +851,7 @@ case "$CMD" in
     if [[ $# -ge 1 ]]; then
       for s in "$@"; do
         if ! docker_container_exists "$s"; then
-          shell_warn "未找到 $s 对应的 Runner 容器，忽略该项！"
+          shell_warn "未找到 $s 对应的 Runner 容器，忽略该参数！"
           continue
         fi
         ids+=("$s")
@@ -903,7 +903,7 @@ case "$CMD" in
       matched=()
       for s in "$@"; do
         if ! docker_container_exists "$s"; then
-          shell_warn "未找到 $s 对应的 Runner 容器，忽略该项！"
+          shell_warn "未找到 $s 对应的 Runner 容器，忽略该参数！"
           continue
         fi
         matched+=("$s")
