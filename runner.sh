@@ -132,6 +132,7 @@ shell_get_org_and_pat() {
   fi
 
   # Prompt using /dev/tty so it works inside command substitutions
+  local wrote_env=0
   if [[ -z "${ORG:-}" ]]; then
     while true; do
       if [[ -e /dev/tty ]]; then
@@ -144,6 +145,7 @@ shell_get_org_and_pat() {
       [[ -n "$ORG" ]] && break
       printf "[WARN] 组织名不能为空，请重试。\n" > /dev/tty
     done
+    wrote_env=1
   fi
 
   if [[ -z "${GH_PAT:-}" ]]; then
@@ -159,9 +161,30 @@ shell_get_org_and_pat() {
       [[ -n "$GH_PAT" ]] && break
       printf "[WARN] PAT 不能为空，请重试。\n" > /dev/tty
     done
+    wrote_env=1
   fi
 
   export ORG GH_PAT
+
+  # Persist to .env if values were entered interactively
+  if [[ $wrote_env -eq 1 ]]; then
+    local env_file=".env" tmp
+    touch "$env_file"
+    chmod 600 "$env_file" 2>/dev/null || true
+
+    if [[ -n "${ORG:-}" ]]; then
+      tmp="$(mktemp .env.tmp.XXXXXX)"
+      grep -v -E '^[[:space:]]*ORG=' "$env_file" > "$tmp" || true
+      printf 'ORG=%s\n' "$ORG" >> "$tmp"
+      mv "$tmp" "$env_file"
+    fi
+    if [[ -n "${GH_PAT:-}" ]]; then
+      tmp="$(mktemp .env.tmp.XXXXXX)"
+      grep -v -E '^[[:space:]]*GH_PAT=' "$env_file" > "$tmp" || true
+      printf 'GH_PAT=%s\n' "$GH_PAT" >> "$tmp"
+      mv "$tmp" "$env_file"
+    fi
+  fi
 }
 
 # 根据 Dockerfile 与本地镜像情况决定镜像；按需构建；通过 echo 返回选中的镜像名
