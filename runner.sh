@@ -117,12 +117,51 @@ shell_prompt_confirm() {
 }
 
 shell_get_org_and_pat() {
-  [[ -n "$ORG" ]] || read -rp "请输入组织名（与 github.com 上一致）: " ORG
-  if [[ -z "${GH_PAT}" ]]; then
-    echo -n "请输入 Classic PAT（admin:org）（输入不可见）: "
-    read -rs GH_PAT; echo
+  # Fast path when both provided via env/.env
+  if [[ -n "${ORG:-}" && -n "${GH_PAT:-}" ]]; then
+    return 0
   fi
-  [[ -n "$ORG" && -n "$GH_PAT" ]] || shell_die "ORG/GH_PAT 不能为空。"
+
+  # Detect interactive TTY; if not interactive, require env values
+  local has_tty=0
+  if [[ -t 0 || -t 1 || -t 2 ]]; then has_tty=1; fi
+  if [[ $has_tty -eq 0 ]]; then
+    [[ -n "${ORG:-}" && -n "${GH_PAT:-}" ]] || \
+      shell_die "ORG/GH_PAT 不能为空（非交互环境请通过环境变量或 .env 提供）。"
+    return 0
+  fi
+
+  # Prompt using /dev/tty so it works inside command substitutions
+  if [[ -z "${ORG:-}" ]]; then
+    while true; do
+      if [[ -e /dev/tty ]]; then
+        printf "请输入组织名（与 github.com 上一致）: " > /dev/tty
+        IFS= read -r ORG < /dev/tty || true
+      else
+        read -rp "请输入组织名（与 github.com 上一致）: " ORG || true
+      fi
+      ORG="$(printf '%s' "${ORG:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+      [[ -n "$ORG" ]] && break
+      printf "[WARN] 组织名不能为空，请重试。\n" > /dev/tty
+    done
+  fi
+
+  if [[ -z "${GH_PAT:-}" ]]; then
+    while true; do
+      if [[ -e /dev/tty ]]; then
+        printf "请输入 Classic PAT（admin:org）（输入不可见）: " > /dev/tty
+        IFS= read -rs GH_PAT < /dev/tty || true; echo > /dev/tty
+      else
+        echo -n "请输入 Classic PAT（admin:org）（输入不可见）: " >&2
+        read -rs GH_PAT || true; echo >&2
+      fi
+      GH_PAT="$(printf '%s' "${GH_PAT:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+      [[ -n "$GH_PAT" ]] && break
+      printf "[WARN] PAT 不能为空，请重试。\n" > /dev/tty
+    done
+  fi
+
+  export ORG GH_PAT
 }
 
 # 根据 Dockerfile 与本地镜像情况决定镜像；按需构建；通过 echo 返回选中的镜像名
@@ -350,7 +389,7 @@ shell_get_reg_token() {
   fi
 
   shell_get_org_and_pat
-  shell_info "请求组织注册令牌..."
+  shell_info "请求组织注册令牌..." >&2
   local new_token
   new_token="$(github_fetch_reg_token || true)"
   [[ -n "$new_token" && "$new_token" != "null" ]] || shell_die "获取注册令牌失败！"
