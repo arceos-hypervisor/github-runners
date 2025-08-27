@@ -2,11 +2,12 @@
 set -euo pipefail
 
 COMPOSE_FILE="docker-compose.yml"
+ENV_FILE="${ENV_FILE:-.env}"
 
 # ------------------------------- load .env file -------------------------------
-if [[ -f .env ]]; then
+if [[ -f "$ENV_FILE" ]]; then
   # shellcheck disable=SC2046
-  export $(grep -v '^[[:space:]]*#' .env | grep -v '^[[:space:]]*$' | sed 's/^/export /')
+  export $(grep -v '^[[:space:]]*#' "$ENV_FILE" | grep -v '^[[:space:]]*$' | sed 's/^/export /')
 fi
 
 ORG="${ORG:-}"
@@ -166,20 +167,20 @@ shell_get_org_and_pat() {
 
   export ORG GH_PAT
 
-  # Persist to .env if values were entered interactively
+  # Persist to .env (ENV_FILE) if values were entered interactively
   if [[ $wrote_env -eq 1 ]]; then
-    local env_file=".env" tmp
+    local env_file="$ENV_FILE" tmp
     touch "$env_file"
     chmod 600 "$env_file" 2>/dev/null || true
 
     if [[ -n "${ORG:-}" ]]; then
-      tmp="$(mktemp .env.tmp.XXXXXX)"
+      tmp="$(mktemp "${env_file}.tmp.XXXXXX")"
       grep -v -E '^[[:space:]]*ORG=' "$env_file" > "$tmp" || true
       printf 'ORG=%s\n' "$ORG" >> "$tmp"
       mv "$tmp" "$env_file"
     fi
     if [[ -n "${GH_PAT:-}" ]]; then
-      tmp="$(mktemp .env.tmp.XXXXXX)"
+      tmp="$(mktemp "${env_file}.tmp.XXXXXX")"
       grep -v -E '^[[:space:]]*GH_PAT=' "$env_file" > "$tmp" || true
       printf 'GH_PAT=%s\n' "$GH_PAT" >> "$tmp"
       mv "$tmp" "$env_file"
@@ -933,12 +934,17 @@ case "$CMD" in
     if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; then
       shell_delete_all_execute ""
     else
-      shell_delete_all_execute "确定要注销所有 Runners 以及删除所有容器和卷，并移除 ${COMPOSE_FILE} 文件？[y / N] " || { echo "操作已取消！"; exit 0; }
+      shell_delete_all_execute "确定要注销所有 Runners、删除所有容器和卷，并移除所有生成的文件？[y / N] " || { echo "操作已取消！"; exit 0; }
     fi
-    if [[ -f "$COMPOSE_FILE" ]]; then
-      shell_info "删除 $COMPOSE_FILE 文件"
-      rm -f "$COMPOSE_FILE"
-    fi
+    for f in "$COMPOSE_FILE" \
+             "${REG_TOKEN_CACHE_FILE}" \
+             "${DOCKERFILE_HASH_FILE}" \
+             "$ENV_FILE"; do
+      if [[ -f "$f" ]]; then
+        shell_info "删除 $f 文件"
+        rm -f "$f" || true
+      fi
+    done
     shell_info "purge 完成！"
     ;;
 
