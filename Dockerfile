@@ -28,6 +28,7 @@ RUN apt-get update \
        dosfstools \
        python3-venv \
        udev \
+       libudev-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Optional: add more toolchains here (cmake, ninja, python, etc)
