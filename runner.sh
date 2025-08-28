@@ -27,10 +27,8 @@ DOCKERFILE_HASH_FILE="${DOCKERFILE_HASH_FILE:-.dockerfile.sha256}"
 
 # Loop device/privilege handling (to avoid 'failed to setup loop device')
 PRIVILEGED="${PRIVILEGED:-true}"
-ADD_SYS_ADMIN_CAP="${ADD_SYS_ADMIN_CAP:-true}"
 MAP_LOOP_DEVICES="${MAP_LOOP_DEVICES:-true}"
 LOOP_DEVICE_COUNT="${LOOP_DEVICE_COUNT:-4}"
-ADD_DEVICE_CGROUP_RULES="${ADD_DEVICE_CGROUP_RULES:-true}"
 # kvm 相关处理
 MAP_KVM_DEVICE="${MAP_KVM_DEVICE:-true}"
 KVM_GROUP_ADD="${KVM_GROUP_ADD:-true}"
@@ -89,10 +87,8 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "RUNNER_IMAGE" "用于生成 compose 的镜像（默认 ghcr.io/actions/actions-runner:latest）"
   printf "  %-${KEYW}s %s\n" "RUNNER_CUSTOM_IMAGE" "自动构建时使用的镜像 tag（可重写）"
   printf "  %-${KEYW}s %s\n" "PRIVILEGED" "是否以 privileged 运行（默认 true，建议: 解决 loop device 问题）"
-  printf "  %-${KEYW}s %s\n" "ADD_SYS_ADMIN_CAP" "当不启用 privileged 时，添加 SYS_ADMIN 能力（默认 true）"
   printf "  %-${KEYW}s %s\n" "MAP_LOOP_DEVICES" "是否映射宿主 /dev/loop* 到容器（默认 true）"
   printf "  %-${KEYW}s %s\n" "LOOP_DEVICE_COUNT" "最多映射的 loop 设备数量（默认 4）"
-  printf "  %-${KEYW}s %s\n" "ADD_DEVICE_CGROUP_RULES" "当不启用 privileged 时，添加 device_cgroup_rules 以允许 loop（默认 true）"
   printf "  %-${KEYW}s %s\n" "MAP_KVM_DEVICE" "是否映射 /dev/kvm 到容器（默认 true，存在时）"
   printf "  %-${KEYW}s %s\n" "KVM_GROUP_ADD" "将容器加入宿主 /dev/kvm 的 GID（默认 true）"
   printf "  %-${KEYW}s %s\n" "MOUNT_UDEV_RULES_DIR" "为 /etc/udev/rules.d 提供挂载以确保目录存在（默认 true）"
@@ -264,53 +260,43 @@ shell_render_compose_file() {
     printf "    %s\n" "NO_PROXY: localhost,127.0.0.1,.internal"
     printf "  %s\n" "network_mode: host"
 
-    # privileged
+    # 这里让容器获得几乎和宿主机一样的全部内核能力，并解锁对所有设备的访问权限（更合适的是使用 cap-add 细分的权限控制）
     if [[ "$PRIVILEGED" == "1" || "$PRIVILEGED" == "true" ]]; then
       printf "  %s\n" "privileged: true"
-    else
-      if [[ "$ADD_SYS_ADMIN_CAP" == "1" || "$ADD_SYS_ADMIN_CAP" == "true" ]]; then
-        printf "  %s\n" "cap_add:"
-        printf "    - %s\n" "SYS_ADMIN"
-      fi
-      if [[ "$ADD_DEVICE_CGROUP_RULES" == "1" || "$ADD_DEVICE_CGROUP_RULES" == "true" ]]; then
-        printf "  %s\n" "device_cgroup_rules:"
-        printf "    - %s\n" "'b 7:* rwm'"
-        printf "    - %s\n" "'c 10:237 rwm'"
-        printf "    - %s\n" "'c 10:232 rwm'"
-      fi
     fi
-    # Device mappings (loop and kvm)
-    local printed_devices=0
+
+    # 映射设备（kvm、loo、usb）
+    printf "  %s\n" "devices:"
     if [[ "$MAP_LOOP_DEVICES" == "1" || "$MAP_LOOP_DEVICES" == "true" ]]; then
+      if [[ -e "/dev/loop-control" ]]; then
+        printf "    - %s\n" "/dev/loop-control:/dev/loop-control"
+      fi
       local j
       for j in $(seq 0 $((LOOP_DEVICE_COUNT-1))); do
         if [[ -e "/dev/loop${j}" ]]; then
-          if (( printed_devices == 0 )); then
-            printf "  %s\n" "devices:"
-            printed_devices=1
-            if [[ -e "/dev/loop-control" ]]; then
-              printf "    - %s\n" "/dev/loop-control:/dev/loop-control"
-            fi
-          fi
           printf "    - %s\n" "/dev/loop${j}:/dev/loop${j}"
         fi
       done
     fi
     if [[ "$MAP_KVM_DEVICE" == "1" || "$MAP_KVM_DEVICE" == "true" ]]; then
       if [[ -e "/dev/kvm" ]]; then
-        if (( printed_devices == 0 )); then
-          printf "  %s\n" "devices:"
-          printed_devices=1
-        fi
         printf "    - %s\n" "/dev/kvm:/dev/kvm"
       fi
     fi
+    if [[ -e "/dev/ttyUSB0" ]]; then
+      printf "    - %s\n" "/dev/ttyUSB0:/dev/ttyUSB0"
+    fi
+    if [[ -e "/dev/ttyACM0" ]]; then
+      printf "    - %s\n" "/dev/ttyACM0:/dev/ttyACM0"
+    fi
+
+    # 映射 Linux 用户组（group）权限，以便可以访问属于特定的 group 的设备（如 /dev/kvm）
+    printf "  %s\n" "group_add:"
     if [[ "$KVM_GROUP_ADD" == "1" || "$KVM_GROUP_ADD" == "true" ]]; then
       if [[ -e "/dev/kvm" ]]; then
         local kvm_gid
         kvm_gid="$(stat -c '%g' /dev/kvm 2>/dev/null || true)"
         if [[ -n "$kvm_gid" ]]; then
-          printf "  %s\n" "group_add:"
           printf "    - %s\n" "$kvm_gid"
         fi
       fi
