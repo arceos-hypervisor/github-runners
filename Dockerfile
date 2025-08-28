@@ -29,6 +29,8 @@ RUN apt-get update \
        python3-venv \
        udev \
        libudev-dev \
+       openssl \
+       libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Optional: add more toolchains here (cmake, ninja, python, etc)
