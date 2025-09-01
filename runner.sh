@@ -283,9 +283,11 @@ shell_render_compose_file() {
         printf "    - %s\n" "/dev/kvm:/dev/kvm"
       fi
     fi
-    if [[ -e "/dev/ttyUSB0" ]]; then
-      printf "    - %s\n" "/dev/ttyUSB0:/dev/ttyUSB0"
-    fi
+    for ttyUSB in /dev/ttyUSB*; do
+      if [[ -e "$ttyUSB" ]]; then
+        printf "    - %s\n" "$ttyUSB:$ttyUSB"
+      fi
+    done
     if [[ -e "/dev/ttyACM0" ]]; then
       printf "    - %s\n" "/dev/ttyACM0:/dev/ttyACM0"
     fi
