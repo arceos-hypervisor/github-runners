@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-COMPOSE_FILE="docker-compose.yml"
 ENV_FILE="${ENV_FILE:-.env}"
 
 # ------------------------------- load .env file -------------------------------
@@ -10,33 +9,32 @@ if [[ -f "$ENV_FILE" ]]; then
   export $(grep -v '^[[:space:]]*#' "$ENV_FILE" | grep -v '^[[:space:]]*$' | sed 's/^/export /')
 fi
 
+# 组织，REG_TOKEN 等
 ORG="${ORG:-}"
 GH_PAT="${GH_PAT:-}"
+REG_TOKEN_CACHE_FILE="${REG_TOKEN_CACHE_FILE:-.reg_token.cache}"
+REG_TOKEN_CACHE_TTL="${REG_TOKEN_CACHE_TTL:-300}" # seconds, default 5 minutes
+
+# Runner 容器相关参数
+RUNNER_IMAGE="${RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}"
+RUNNER_CUSTOM_IMAGE="${RUNNER_CUSTOM_IMAGE:-qc-actions-runner:v0.0.1}"
+RUNNER_COUNT="${RUNNER_COUNT:-2}"
+COMPOSE_FILE="docker-compose.yml"
+DOCKERFILE_HASH_FILE="${DOCKERFILE_HASH_FILE:-.dockerfile.sha256}"
 RUNNER_LABELS="${RUNNER_LABELS:-self-hosted,linux,docker}"
 RUNNER_GROUP="${RUNNER_GROUP:-Default}"
 RUNNER_NAME_PREFIX="${RUNNER_NAME_PREFIX:+${RUNNER_NAME_PREFIX}-}"
-RUNNER_COUNT="${RUNNER_COUNT:-2}"
-DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
 RUNNER_WORKDIR="${RUNNER_WORKDIR:-}"
-MOUNT_DOCKER_SOCK="${MOUNT_DOCKER_SOCK:-}"
+DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
 
-# 镜像设置：用于 compose 渲染与本地构建
-RUNNER_IMAGE="${RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}"
-RUNNER_CUSTOM_IMAGE="${RUNNER_CUSTOM_IMAGE:-qc-actions-runner:v0.0.1}"
-DOCKERFILE_HASH_FILE="${DOCKERFILE_HASH_FILE:-.dockerfile.sha256}"
-
-# Loop device/privilege handling (to avoid 'failed to setup loop device')
+# 容器内部权限与设备映射设置
 PRIVILEGED="${PRIVILEGED:-true}"
 MAP_LOOP_DEVICES="${MAP_LOOP_DEVICES:-true}"
 LOOP_DEVICE_COUNT="${LOOP_DEVICE_COUNT:-4}"
-# kvm 相关处理
 MAP_KVM_DEVICE="${MAP_KVM_DEVICE:-true}"
-KVM_GROUP_ADD="${KVM_GROUP_ADD:-true}"
+MAP_USB_DEVICE="${MAP_USB_DEVICE:-true}"
 MOUNT_UDEV_RULES_DIR="${MOUNT_UDEV_RULES_DIR:-true}"
-
-# REG_TOKEN cache control
-REG_TOKEN_CACHE_FILE="${REG_TOKEN_CACHE_FILE:-.reg_token.cache}"
-REG_TOKEN_CACHE_TTL="${REG_TOKEN_CACHE_TTL:-300}" # seconds, default 5 minutes
+MOUNT_DOCKER_SOCK="${MOUNT_DOCKER_SOCK:-}"
 
 # ------------------------------- Helpers -------------------------------
 shell_usage() {
@@ -90,7 +88,7 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "MAP_LOOP_DEVICES" "是否映射宿主 /dev/loop* 到容器（默认 true）"
   printf "  %-${KEYW}s %s\n" "LOOP_DEVICE_COUNT" "最多映射的 loop 设备数量（默认 4）"
   printf "  %-${KEYW}s %s\n" "MAP_KVM_DEVICE" "是否映射 /dev/kvm 到容器（默认 true，存在时）"
-  printf "  %-${KEYW}s %s\n" "KVM_GROUP_ADD" "将容器加入宿主 /dev/kvm 的 GID（默认 true）"
+  printf "  %-${KEYW}s %s\n" "MAP_USB_DEVICE" "是否映射 /dev/ttyUSB* 到容器（默认 true，存在时）"
   printf "  %-${KEYW}s %s\n" "MOUNT_UDEV_RULES_DIR" "为 /etc/udev/rules.d 提供挂载以确保目录存在（默认 true）"
 
   echo
@@ -283,25 +281,24 @@ shell_render_compose_file() {
         printf "    - %s\n" "/dev/kvm:/dev/kvm"
       fi
     fi
-    for ttyUSB in /dev/ttyUSB*; do
-      if [[ -e "$ttyUSB" ]]; then
-        printf "    - %s\n" "$ttyUSB:$ttyUSB"
+    if [[ "$MAP_USB_DEVICE" == "1" || "$MAP_USB_DEVICE" == "true" ]]; then
+      for ttyUSB in /dev/ttyUSB*; do
+        if [[ -e "$ttyUSB" ]]; then
+          printf "    - %s\n" "$ttyUSB:$ttyUSB"
+        fi
+      done
+      if [[ -e "/dev/ttyACM0" ]]; then
+        printf "    - %s\n" "/dev/ttyACM0:/dev/ttyACM0"
       fi
-    done
-    if [[ -e "/dev/ttyACM0" ]]; then
-      printf "    - %s\n" "/dev/ttyACM0:/dev/ttyACM0"
     fi
 
     # 映射 Linux 用户组（group）权限，以便可以访问属于特定的 group 的设备（如 /dev/kvm）
-    printf "  %s\n" "group_add:"
-    if [[ "$KVM_GROUP_ADD" == "1" || "$KVM_GROUP_ADD" == "true" ]]; then
-      if [[ -e "/dev/kvm" ]]; then
-        local kvm_gid
-        kvm_gid="$(stat -c '%g' /dev/kvm 2>/dev/null || true)"
-        if [[ -n "$kvm_gid" ]]; then
-          printf "    - %s\n" "$kvm_gid"
-        fi
-      fi
+    printf "  group_add:\n"
+    if [[ "$MAP_KVM_DEVICE" == "1" || "$MAP_KVM_DEVICE" == "true" ]]; then
+      printf "    - kvm\n"
+    fi
+    if [[ "$MAP_USB_DEVICE" == "1" || "$MAP_USB_DEVICE" == "true" ]]; then
+    printf "    - dialout\n"
     fi
 
     if [[ "$MOUNT_DOCKER_SOCK" == "1" || "$MOUNT_DOCKER_SOCK" == "true" ]]; then
