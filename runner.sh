@@ -295,10 +295,16 @@ shell_render_compose_file() {
     # 映射 Linux 用户组（group）权限，以便可以访问属于特定的 group 的设备（如 /dev/kvm）
     printf "  group_add:\n"
     if [[ "$MAP_KVM_DEVICE" == "1" || "$MAP_KVM_DEVICE" == "true" ]]; then
-      printf "    - kvm\n"
+      if [[ -e "/dev/kvm" ]]; then
+        local kvm_gid
+        kvm_gid="$(stat -c '%g' /dev/kvm 2>/dev/null || true)"
+        if [[ -n "$kvm_gid" ]]; then
+          printf "    - %s\n" "$kvm_gid"
+        fi
+      fi
     fi
     if [[ "$MAP_USB_DEVICE" == "1" || "$MAP_USB_DEVICE" == "true" ]]; then
-    printf "    - dialout\n"
+      printf "    - dialout\n"
     fi
 
     if [[ "$MOUNT_DOCKER_SOCK" == "1" || "$MOUNT_DOCKER_SOCK" == "true" ]]; then

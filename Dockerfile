@@ -37,6 +37,7 @@ RUN apt-get update \
 
 # 串口访问只能是 root 和 dialout 组，这里直把 runner 用户加入 dialout 组
 RUN usermod -aG dialout runner
+RUN usermod -aG kvm runner
 
 # Optional: add more toolchains here (cmake, ninja, python, etc)
 # RUN apt-get update && apt-get install -y --no-install-recommends \
