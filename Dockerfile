@@ -33,6 +33,7 @@ RUN apt-get update \
        libssl-dev \
        xxd \
        wget \
+       mbpoll \
     && rm -rf /var/lib/apt/lists/*
 
 # 串口访问只能是 root 和 dialout 组，这里直把 runner 用户加入 dialout 组
