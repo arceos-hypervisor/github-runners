@@ -97,9 +97,9 @@ shell_usage() {
   echo
   echo "提示:"
   echo "- 动态生成的 docker-compose.yml 会覆盖同名文件（存量容器不受影响）。"
-  echo "- 重新 start/scale/up 会复用已有卷，不会丢失 Runner 配置与工具缓存。"
-  echo "- BOARD_RUNNERS 形如 phytiumpi:phytiumpi,extra1;roc-rk3568-pc:roc-rk3568-pc 使用分号分隔多个开发板；条目内冒号后可再用逗号列出多个标签。"
-  echo "- 注册时会自动将基础 RUNNER_LABELS 与对应开发板追加标签合并并去重。"
+  echo "- 重新 start/up 会复用已有卷，不会丢失 Runner 配置与工具缓存。"
+  echo "- BOARD_RUNNERS 示例: phytiumpi:phytiumpi,extra1;roc-rk3568-pc:roc-rk3568-pc；分号分隔多块开发板，冒号后为该开发板专属标签(逗号分隔)。"
+  echo "- 开发板实例现在仅使用其专属标签(BOARD_RUNNERS 中提供的部分)，不再附带基础 RUNNER_LABELS。"
 }
 
 shell_die() { echo "[ERROR] $*" >&2; exit 1; }
@@ -371,7 +371,8 @@ shell_render_compose_file() {
         printf "    %s\n" "command: [\"/home/runner/run.sh\"]"
         printf "    %s\n" "environment:"
         printf "      %s\n" "<<: *runner_env"
-        printf "      %s\n" "RUNNER_LABELS: \"${RUNNER_LABELS},${blabels}\""
+  # 对于开发板实例，仅使用 BOARD_RUNNERS 中给出的标签，不再附加基础 RUNNER_LABELS
+  printf "      %s\n" "RUNNER_LABELS: \"${blabels}\""
         printf "      %s\n" "RUNNER_NAME: \"$svc\""
         printf "    %s\n" "volumes:"
         printf "      - %s\n" "$vname:/home/runner"
@@ -660,8 +661,8 @@ docker_runner_register() {
       for entry in ${BOARD_RUNNERS}; do
         raw="${entry}"; name="${raw%%:*}"; blabels="${raw#*:}"
         if [[ "$name" == "$svcbase" ]]; then
-          # blabels 里可能还有逗号（上面按逗号切割会分裂），所以直接使用原始剩余部分
-          labels="${labels},${blabels}"
+          # 匹配开发板实例：仅使用开发板条目中的标签，覆盖基础 RUNNER_LABELS
+          labels="${blabels}"
         fi
       done
       # 恢复 IFS，避免后续使用 ${cfg_opts[*]} 展开时被分号连接
