@@ -617,14 +617,6 @@ docker_container_exists() {
   $DC -f "$COMPOSE_FILE" ps --services --all | grep -qx "$name" >/dev/null 2>&1
 }
 
-docker_remove_container_and_volume_by_index() {
-  local i="$1"
-  local cname="${RUNNER_NAME_PREFIX}runner-${i}"
-  if [[ -f "$COMPOSE_FILE" ]]; then
-    $DC -f "$COMPOSE_FILE" rm -s -f "$cname" >/dev/null 2>&1 || true
-  fi
-}
-
 docker_remove_all_local_containers_and_volumes() {
   if [[ -f "$COMPOSE_FILE" ]]; then
     shell_info "使用 docker compose down -v 删除所有服务与卷"
@@ -634,16 +626,10 @@ docker_remove_all_local_containers_and_volumes() {
   fi
 }
 
-docker_runner_is_configured() {
-  local idx="$1" svc; svc="${RUNNER_NAME_PREFIX}runner-${idx}"
-  [[ -f "$COMPOSE_FILE" ]] || return 1
-  $DC -f "$COMPOSE_FILE" run --rm --no-deps "$svc" bash -lc 'test -f /home/runner/.runner && test -f /home/runner/.credentials' >/dev/null 2>&1
-}
-
 docker_runner_register() {
   # 用法：
   #   docker_runner_register                -> 自动发现所有 runner-* 容器并注册未配置的
-  #   docker_runner_register runner-1 ...   -> 仅注册指定名称（不再支持数字简写）
+  #   docker_runner_register runner-1 ...   -> 注册指定名称的 runner
   local names=()
   if [[ $# -gt 0 ]]; then
     names=("$@")
@@ -768,8 +754,8 @@ case "$CMD" in
 
   # ./runner.sh start [${RUNNER_NAME_PREFIX}runner-<id> ...]
   start)
-    ids=(); max_id=0
     if [[ $# -ge 1 ]]; then
+      ids=(); max_id=0
       for s in "$@"; do
         if ! docker_container_exists "$s"; then
           shell_warn "未找到 $s 对应的 Runner 容器，忽略该参数！"
@@ -779,57 +765,30 @@ case "$CMD" in
         n="${s##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
       done
       if [[ ${#ids[@]} -eq 0 ]]; then
-        shell_info "没有可启动的 Runner 容器！"
+        shell_info "没有可停止的 Runner 容器！"
         exit 0
       fi
+      exist_max="$(docker_highest_existing_index)"
+      count="$exist_max"; (( max_id > count )) && count="$max_id"
+      (( count >= 1 )) || count=1
+      shell_render_compose_file "$count"
+      docker_compose_up "${ids[@]}"
     else
       names="$(docker_list_existing_containers)"
       if [[ -z "$names" ]]; then
-        shell_info "没有可启动的 Runner 容器！"
+        shell_info "没有可停止的 Runner 容器！"
         exit 0
       fi
+      ids=(); max_id=0
       while IFS= read -r cname; do
         [[ -n "$cname" ]] || continue
         ids+=("$cname")
         n="${cname##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
       done <<< "$names"
+      (( max_id >= 1 )) || max_id=1
+      shell_render_compose_file "$max_id"
+      docker_compose_up "${ids[@]}"
     fi
-
-    (( max_id >= 1 )) || max_id=1
-    shell_render_compose_file "$max_id"
-
-    # 检查是否有未配置的实例，按需注册
-    need_register=0
-    declare -a reg_ids=()
-    declare -a force_reg_ids=()
-    # 获取组织端现有 runners 列表用于判断是否缺失
-    org_names=""
-    if command -v jq >/dev/null 2>&1; then
-      if [[ -n "${ORG:-}" && -n "${GH_PAT:-}" ]]; then
-        resp=$(github_api GET "/actions/runners?per_page=100" || echo "{}")
-        org_names=$(echo "$resp" | jq -r '.runners[].name' 2>/dev/null || echo "")
-      fi
-    fi
-    for s in "${ids[@]}"; do
-      idx="${s##*-}"; [[ "$idx" =~ ^[0-9]+$ ]] || continue
-      if ! docker_runner_is_configured "$idx"; then
-        need_register=1
-        reg_ids+=("$idx")
-      else
-        if [[ -n "$org_names" ]] && ! echo "$org_names" | grep -qx "$s"; then
-          need_register=1
-          force_reg_ids+=("$idx")
-        fi
-      fi
-    done
-    if [[ "$need_register" -eq 1 ]]; then
-      declare -a to_reg=()
-      for idx in "${reg_ids[@]}"; do to_reg+=("${RUNNER_NAME_PREFIX}runner-${idx}"); done
-      for idx in "${force_reg_ids[@]}"; do to_reg+=("${RUNNER_NAME_PREFIX}runner-${idx}"); done
-      [[ ${#to_reg[@]} -gt 0 ]] && docker_runner_register "${to_reg[@]}"
-    fi
-    # 统一一次性启动所需容器，避免重复输出
-    docker_compose_up "${ids[@]}"
     ;;
 
   # ./runner.sh stop [${RUNNER_NAME_PREFIX}runner-<id> ...]
