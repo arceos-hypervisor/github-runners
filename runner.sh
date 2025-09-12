@@ -19,6 +19,7 @@ REG_TOKEN_CACHE_TTL="${REG_TOKEN_CACHE_TTL:-300}" # seconds, default 5 minutes
 RUNNER_IMAGE="${RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}"
 RUNNER_CUSTOM_IMAGE="${RUNNER_CUSTOM_IMAGE:-qc-actions-runner:v0.0.1}"
 RUNNER_COUNT="${RUNNER_COUNT:-2}"
+BOARD_RUNNERS="phytiumpi:board,phytiumpi;roc-rk3568-pc:board,roc-rk3568-pc"  # 形如 board1_name:labels1,label2;board2_name:labels1,label2[;...] 使用分号分隔多个开发板条目（内部标签仍用逗号）
 COMPOSE_FILE="docker-compose.yml"
 DOCKERFILE_HASH_FILE="${DOCKERFILE_HASH_FILE:-.dockerfile.sha256}"
 RUNNER_LABELS="${RUNNER_LABELS:-self-hosted,linux,docker}"
@@ -42,14 +43,12 @@ shell_usage() {
   echo "用法: ./runner.sh COMMAND [选项]    其中，[选项] 由 COMMAND 决定，可用 COMMAND 如下所示："
   echo
 
-  echo "1. 初始化/扩缩相关命令:"
+  echo "1. 创建相关命令:"
   printf "  %-${COLW}s %s\n" "./runner.sh init [-n N]" "生成 N 个服务并启动（默认使用 .env 中 RUNNER_COUNT）"
   printf "  %-${COLW}s %s\n" "" "首次会向组织申请注册令牌并持久化到各自卷中"
-  printf "  %-${COLW}s %s\n" "./runner.sh scale N" "将 Runner 数量调整为 N；启动 1 .. N，停止其他的（保留卷）"
-  # 已移除 build 子命令：自动构建由脚本内部完成
   echo
 
-  echo "2. 单实例操作相关命令:"
+  echo "2. 实例操作相关命令:"
   printf "  %-${COLW}s %s\n" "./runner.sh register [${RUNNER_NAME_PREFIX}runner-<id> ...]" "注册指定实例；不带参数默认遍历所有已存在实例"
   printf "  %-${COLW}s %s\n" "./runner.sh start [${RUNNER_NAME_PREFIX}runner-<id> ...]" "启动指定实例（会按需注册）；不带参数默认遍历所有已存在实例"
   printf "  %-${COLW}s %s\n" "./runner.sh stop [${RUNNER_NAME_PREFIX}runner-<id> ...]" "直接停止 Runner 容器；不带参数默认遍历所有已存在实例"
@@ -78,7 +77,8 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "RUNNER_LABELS" "示例: self-hosted,linux,docker"
   printf "  %-${KEYW}s %s\n" "RUNNER_GROUP" "Runner 组（可选）"
   printf "  %-${KEYW}s %s\n" "RUNNER_NAME_PREFIX" "Runner 命名前缀"
-  printf "  %-${KEYW}s %s\n" "RUNNER_COUNT" "start/scale 默认数量"
+  printf "  %-${KEYW}s %s\n" "RUNNER_COUNT" "创建时的默认数量"
+  printf "  %-${KEYW}s %s\n" "BOARD_RUNNERS" "开发板 Runner 列表: name:label1[,label2] 以分号分隔多个开发板条目; 内部 label 仍以逗号"
   printf "  %-${KEYW}s %s\n" "DISABLE_AUTO_UPDATE" '"1" 表示禁用 Runner 自更新'
   printf "  %-${KEYW}s %s\n" "RUNNER_WORKDIR" "工作目录（默认 /runner/_work）"
   printf "  %-${KEYW}s %s\n" "MOUNT_DOCKER_SOCK" '"true"/"1" 表示挂载 /var/run/docker.sock（高权限，谨慎）'
@@ -98,6 +98,8 @@ shell_usage() {
   echo "提示:"
   echo "- 动态生成的 docker-compose.yml 会覆盖同名文件（存量容器不受影响）。"
   echo "- 重新 start/scale/up 会复用已有卷，不会丢失 Runner 配置与工具缓存。"
+  echo "- BOARD_RUNNERS 形如 phytiumpi:phytiumpi,extra1;roc-rk3568-pc:roc-rk3568-pc 使用分号分隔多个开发板；条目内冒号后可再用逗号列出多个标签。"
+  echo "- 注册时会自动将基础 RUNNER_LABELS 与对应开发板追加标签合并并去重。"
 }
 
 shell_die() { echo "[ERROR] $*" >&2; exit 1; }
@@ -234,6 +236,24 @@ shell_prepare_runner_image() {
   fi
 }
 
+# 统计 BOARD_RUNNERS 中有效开发板条目数量（形如 name:labels），返回数字
+shell_count_board_runners() {
+  local br="${BOARD_RUNNERS:-}" c=0 e
+  [[ -n "$br" ]] || { echo 0; return 0; }
+  IFS=';' read -r -a __arr <<< "$br"
+  for e in "${__arr[@]}"; do
+    # 去掉首尾空白
+    e="$(echo "$e" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [[ -z "$e" ]] && continue
+    # 必须包含冒号且冒号后非空
+    [[ "$e" == *:* ]] || continue
+    local name="${e%%:*}" rest="${e#*:}"
+    [[ -n "$name" && -n "$rest" ]] || continue
+    ((c++))
+  done
+  echo "$c"
+}
+
 # 生成 docker-compose.yml 文件
 shell_render_compose_file() {
   local count="$1"
@@ -248,7 +268,6 @@ shell_render_compose_file() {
     printf "  %s\n" "environment: &runner_env"
     printf "    %s\n" "RUNNER_ORG_URL: \"https://github.com/${ORG}\""
     printf "    %s\n" "RUNNER_TOKEN: \"${REG_TOKEN}\""
-    printf "    %s\n" "RUNNER_LABELS: \"${RUNNER_LABELS}\""
     printf "    %s\n" "RUNNER_GROUP: \"${RUNNER_GROUP}\""
     printf "    %s\n" "RUNNER_REMOVE_ON_STOP: \"false\""
     printf "    %s\n" "DISABLE_AUTO_UPDATE: \"${DISABLE_AUTO_UPDATE}\""
@@ -330,6 +349,7 @@ shell_render_compose_file() {
       printf "    %s\n" "environment:"
       printf "      %s\n" "<<: *runner_env"
       printf "      %s\n" "RUNNER_NAME: \"$svc\""
+      printf "      %s\n" "RUNNER_LABELS: \"${RUNNER_LABELS}\""
       printf "    %s\n" "volumes:"
       printf "      - %s\n" "$vname:/home/runner"
       if [[ "$MOUNT_UDEV_RULES_DIR" == "1" || "$MOUNT_UDEV_RULES_DIR" == "true" ]]; then
@@ -337,14 +357,52 @@ shell_render_compose_file() {
       fi
     done
 
+    # 动态开发板实例（BOARD_RUNNERS: board1_name:labels1,label2;board2_name:labels1,label2[;...] 使用分号分隔多个开发板条目（内部标签仍用逗号）
+    if [[ -n "${BOARD_RUNNERS:-}" ]]; then
+      local IFS=';' entry raw name blabels svc vname
+      for entry in ${BOARD_RUNNERS}; do
+        raw="${entry}"; name="${raw%%:*}"; blabels="${raw#*:}"
+        [[ -n "$name" && -n "$blabels" ]] || continue
+        svc="${RUNNER_NAME_PREFIX}runner-${name}"
+        vname="${svc}-data"
+        printf "  %s:\n" "$svc"
+        printf "    %s\n" "<<: *runner_base"
+        printf "    %s\n" "container_name: \"$svc\""
+        printf "    %s\n" "command: [\"/home/runner/run.sh\"]"
+        printf "    %s\n" "environment:"
+        printf "      %s\n" "<<: *runner_env"
+        printf "      %s\n" "RUNNER_LABELS: \"${RUNNER_LABELS},${blabels}\""
+        printf "      %s\n" "RUNNER_NAME: \"$svc\""
+        printf "    %s\n" "volumes:"
+        printf "      - %s\n" "$vname:/home/runner"
+        if [[ "$MOUNT_UDEV_RULES_DIR" == "1" || "$MOUNT_UDEV_RULES_DIR" == "true" ]]; then
+          printf "      - %s\n" "${svc}-udev-rules:/etc/udev/rules.d"
+        fi
+      done
+    fi
+
     echo
     echo "volumes:"
-    for i in $(seq 1 "$count"); do
+    # 使用 C 风格循环避免 IFS 在前面被修改后影响 seq 输出的分词，导致 i 变成多行内容
+    local i
+    for (( i=1; i<=count; i++ )); do
       printf "  %s\n" "${RUNNER_NAME_PREFIX}runner-${i}-data:"
       if [[ "$MOUNT_UDEV_RULES_DIR" == "1" || "$MOUNT_UDEV_RULES_DIR" == "true" ]]; then
         printf "  %s\n" "${RUNNER_NAME_PREFIX}runner-${i}-udev-rules:"
       fi
     done
+    # 动态开发板实例（BOARD_RUNNERS: board1_name:labels1,label2;board2_name:labels1,label2[;...] 使用分号分隔多个开发板条目（内部标签仍用逗号）
+    if [[ -n "${BOARD_RUNNERS:-}" ]]; then
+      local IFS=';' entry raw name blabels svc
+      for entry in ${BOARD_RUNNERS}; do
+        raw="${entry}"; name="${raw%%:*}"; blabels="${raw#*:}"
+        [[ -n "$name" && -n "$blabels" ]] || continue
+        printf "  %s\n" "${RUNNER_NAME_PREFIX}runner-${name}-data:"
+        if [[ "$MOUNT_UDEV_RULES_DIR" == "1" || "$MOUNT_UDEV_RULES_DIR" == "true" ]]; then
+          printf "  %s\n" "${RUNNER_NAME_PREFIX}runner-${name}-udev-rules:"
+        fi
+      done
+    fi
   } > "$COMPOSE_FILE"
 }
 
@@ -488,7 +546,7 @@ docker_pick_compose() {
 DC=$(docker_pick_compose)
 
 docker_compose_up() {
-  $DC -f "$COMPOSE_FILE" up -d "$@"; 
+  $DC -f "$COMPOSE_FILE" up -d "$@";
 }
 
 docker_compose_stop() {
@@ -583,50 +641,60 @@ docker_runner_is_configured() {
 }
 
 docker_runner_register() {
-  local idx="$1" force="${2:-0}" name; name="${RUNNER_NAME_PREFIX}runner-${idx}"
-  if [[ "$force" != "1" ]] && docker_runner_is_configured "$idx"; then
-    shell_info "已配置过，跳过注册: $name"
+  # 用法：
+  #   docker_runner_register                -> 自动发现所有 runner-* 容器并注册未配置的
+  #   docker_runner_register runner-1 ...   -> 仅注册指定名称（不再支持数字简写）
+  local names=()
+  if [[ $# -gt 0 ]]; then
+    names=("$@")
+  else
+    mapfile -t names < <(docker_list_existing_containers | sed '/^$/d') || true
+  fi
+  if [[ ${#names[@]} -eq 0 ]]; then
+    shell_info "没有可注册的 Runner 容器！"
     return 0
   fi
-
-  local cfg_opts=(
-    "--url" "https://github.com/${ORG}"
-    "--token" "${REG_TOKEN}"
-    "--name" "${name}"
-    "--labels" "${RUNNER_LABELS}"
-    "--runnergroup" "${RUNNER_GROUP}"
-    "--unattended" "--replace"
-  )
-  if [[ -n "${RUNNER_WORKDIR}" ]]; then
-    cfg_opts+=("--work" "${RUNNER_WORKDIR}")
-  fi
-  if [[ "${DISABLE_AUTO_UPDATE}" == "1" ]]; then
-    cfg_opts+=("--disableupdate")
-  fi
-
-  if [[ "$force" == "1" ]]; then
-    shell_info "在 Github 上重新注册(替换): ${name}"
-  else
-    shell_info "在 Github 上注册: ${name}"
-  fi
   [[ -f "$COMPOSE_FILE" ]] || shell_die "缺少 ${COMPOSE_FILE}，无法使用 compose 进行注册。"
-  $DC -f "$COMPOSE_FILE" run --rm --no-deps "$name" bash -lc "/home/runner/config.sh ${cfg_opts[*]}" >/dev/null
-}
-
-docker_start_runner_container() {
-  local idx="$1" name; name="${RUNNER_NAME_PREFIX}runner-${idx}"
-  [[ -f "$COMPOSE_FILE" ]] || shell_die "缺少 ${COMPOSE_FILE}，无法使用 compose 启动 Runner 容器。"
-  docker_compose_up "$name"
-}
-
-docker_stop_extra_containers_over() {
-  local limit="$1" max_exist
-  max_exist="$(docker_highest_existing_index)"
-  (( max_exist <= limit )) && return 0
-  shell_info "停止超出目标的容器: $((limit+1)) .. $max_exist"
-  for i in $(seq $((limit+1)) "$max_exist"); do
-    local cname; cname="${RUNNER_NAME_PREFIX}runner-$i"
-    docker_compose_stop "$cname" || true
+  local cname
+  for cname in "${names[@]}"; do
+    if ! docker_container_exists "$cname"; then
+      shell_warn "容器未在 compose 中定义或不存在: $cname (跳过)"
+      continue
+    fi
+    if $DC -f "$COMPOSE_FILE" run --rm --no-deps "$cname" bash -lc 'test -f /home/runner/.runner && test -f /home/runner/.credentials' >/dev/null 2>&1; then
+      shell_info "已配置过，跳过注册: $cname"
+      continue
+    fi
+    # 计算标签：基础标签 + 针对 BOARD_RUNNERS 的附加标签
+    local labels="${RUNNER_LABELS}" extra
+    if [[ -n "${BOARD_RUNNERS:-}" ]]; then
+      # 使用分号分隔多个开发板条目
+      local IFS=';' entry raw name blabels svcbase
+      svcbase="${cname#${RUNNER_NAME_PREFIX}runner-}"
+      for entry in ${BOARD_RUNNERS}; do
+        raw="${entry}"; name="${raw%%:*}"; blabels="${raw#*:}"
+        if [[ "$name" == "$svcbase" ]]; then
+          # blabels 里可能还有逗号（上面按逗号切割会分裂），所以直接使用原始剩余部分
+          labels="${labels},${blabels}"
+        fi
+      done
+      # 恢复 IFS，避免后续使用 ${cfg_opts[*]} 展开时被分号连接
+      IFS=$' \t\n'
+    fi
+    # 去重标签
+    labels="$(echo "$labels" | awk -F',' '{n=split($0,a,",");o="";for(i=1;i<=n;i++){gsub(/^[ \t]+|[ \t]+$/,"",a[i]);if(a[i]!=""&&!m[a[i]]++){o=(o?o",":"")a[i]}}print o}')"
+    local cfg_opts=(
+      "--url" "https://github.com/${ORG}"
+      "--token" "${REG_TOKEN}"
+      "--name" "${cname}"
+      "--labels" "${labels}"
+      "--runnergroup" "${RUNNER_GROUP}"
+      "--unattended" "--replace"
+    )
+    [[ -n "${RUNNER_WORKDIR}" ]] && cfg_opts+=("--work" "${RUNNER_WORKDIR}")
+    [[ "${DISABLE_AUTO_UPDATE}" == "1" ]] && cfg_opts+=("--disableupdate")
+    shell_info "在 Github 上注册: ${cname}"
+    $DC -f "$COMPOSE_FILE" run --rm --no-deps "$cname" bash -lc "/home/runner/config.sh ${cfg_opts[*]}" >/dev/null || shell_warn "注册失败(容器: $cname)"
   done
 }
 
@@ -674,61 +742,28 @@ case "$CMD" in
       shift || true
     fi
     [[ "$count" =~ ^[0-9]+$ ]] || shell_die "数量必须是数字！"
-    (( count >= 1 )) || shell_die "数量必须 >= 1！"
+    # 计算开发板数量
+    board_count="$(shell_count_board_runners)"
+    generic_count=$(( count - board_count ))
+    (( generic_count > 0 )) || shell_die "(总数 - board_count) 后的常规实例数量必须 > 0 ！"
 
-    shell_render_compose_file "$count"
+    # 仅在渲染 compose 时减去开发板专用数量（开发板实例后续追加）
+    shell_render_compose_file "$generic_count"
 
-    docker_compose_up $(for i in $(seq 1 "$count"); do echo -n "${RUNNER_NAME_PREFIX}runner-$i "; done)
-    for i in $(seq 1 "$count"); do docker_runner_register "$i"; done
-    ;;
-  
-  # ./runner.sh scale N
-  scale)
-    count="${1:-$RUNNER_COUNT}"
-    [[ -n "$count" ]] || shell_die "缺少数量参数！"
-    [[ "$count" =~ ^[0-9]+$ ]] || shell_die "数量必须是数字！"
-    (( count >= 1 )) || shell_die "数量必须 >= 1！"
-
-    shell_render_compose_file "$count"
-
-    docker_compose_up $(for i in $(seq 1 "$count"); do echo -n "${RUNNER_NAME_PREFIX}runner-$i "; done)
-    docker_stop_extra_containers_over "$count"
+    # 仅为常规实例启动与注册（开发板实例在 compose 里已单独追加）
+    docker_compose_up
+    docker_runner_register
     ;;
 
   # ./runner.sh register [${RUNNER_NAME_PREFIX}runner-<id> ...]
   register)
-    ids=()
     if [[ $# -ge 1 ]]; then
-      for s in "$@"; do
-        if ! docker_container_exists "$s"; then
-          shell_warn "未找到 $s 对应的 Runner 容器，忽略该参数！"
-          continue
-        fi
-        idx="${s##*-}"
-        [[ "$idx" =~ ^[0-9]+$ ]] || continue
-        ids+=("$idx")
-      done
-      if [[ ${#ids[@]} -eq 0 ]]; then
-        shell_info "没有可注册的 Runner 容器！"
-        exit 0
-      fi
+      # 直接把传入参数（容器名或数字）交给 docker_runner_register
+      # 允许一次性多参数
+      docker_runner_register "$@"
     else
-      names="$(docker_list_existing_containers)"
-      if [[ -z "$names" ]]; then
-        shell_info "没有可注册的 Runner 容器！"
-        exit 0
-      fi
-      while IFS= read -r cname; do
-        [[ -n "$cname" ]] || continue
-        idx="${cname##*-}"
-        [[ "$idx" =~ ^[0-9]+$ ]] || continue
-        ids+=("$idx")
-      done <<< "$names"
+      docker_runner_register
     fi
-
-    for id in "${ids[@]}"; do
-      docker_runner_register "$id"
-    done
     ;;
 
   # ./runner.sh start [${RUNNER_NAME_PREFIX}runner-<id> ...]
@@ -788,13 +823,13 @@ case "$CMD" in
       fi
     done
     if [[ "$need_register" -eq 1 ]]; then
-      for idx in "${reg_ids[@]}"; do docker_runner_register "$idx" 0; done
-      for idx in "${force_reg_ids[@]}"; do docker_runner_register "$idx" 1; done
+      declare -a to_reg=()
+      for idx in "${reg_ids[@]}"; do to_reg+=("${RUNNER_NAME_PREFIX}runner-${idx}"); done
+      for idx in "${force_reg_ids[@]}"; do to_reg+=("${RUNNER_NAME_PREFIX}runner-${idx}"); done
+      [[ ${#to_reg[@]} -gt 0 ]] && docker_runner_register "${to_reg[@]}"
     fi
-    for s in "${ids[@]}"; do
-      idx="${s##*-}"; [[ "$idx" =~ ^[0-9]+$ ]] || continue
-      docker_start_runner_container "$idx"
-    done
+    # 统一一次性启动所需容器，避免重复输出
+    docker_compose_up "${ids[@]}"
     ;;
 
   # ./runner.sh stop [${RUNNER_NAME_PREFIX}runner-<id> ...]
@@ -904,7 +939,6 @@ case "$CMD" in
         exit 0
       fi
       for s in "${matched[@]}"; do
-        i="${s##*-}"
         name="$s"
         shell_info "从 Github 上注销: $name"
         rid="$(github_get_runner_id_by_name "$name" || true)"
@@ -913,8 +947,15 @@ case "$CMD" in
         else
           shell_warn "未在组织列表找到 $name，可能已被移除！"
         fi
-        shell_info "删除容器与数据卷: $name / ${RUNNER_NAME_PREFIX}runner-${i}-data"
-        docker_remove_container_and_volume_by_index "$i"
+        # 相关卷名称：<container>-data 以及可选的 <container>-udev-rules
+        vol_list="${name}-data"
+        if [[ "$MOUNT_UDEV_RULES_DIR" == "1" || "$MOUNT_UDEV_RULES_DIR" == "true" ]]; then
+          vol_list+=" / ${name}-udev-rules"
+        fi
+        shell_info "删除容器与数据卷: $name / ${vol_list}"
+        if [[ -f "$COMPOSE_FILE" ]]; then
+          $DC -f "$COMPOSE_FILE" rm -s -f "$name" >/dev/null 2>&1 || true
+        fi
       done
     fi
     ;;
