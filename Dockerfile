@@ -34,6 +34,18 @@ RUN apt-get update \
        xxd \
        wget \
        mbpoll \
+       flex \
+       bison \
+       libelf-dev \
+       gcc-aarch64-linux-gnu \
+       gcc-riscv64-linux-gnu \
+       bc \
+       fakeroot \
+       coreutils \
+       cpio \
+       gzip \
+       gcc-multilib \
+       build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # 串口访问只能是 root 和 dialout 组，这里直把 runner 用户加入 dialout 组
