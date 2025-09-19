@@ -38,14 +38,20 @@ RUN apt-get update \
        bison \
        libelf-dev \
        gcc-aarch64-linux-gnu \
+       g++-aarch64-linux-gnu \
        gcc-riscv64-linux-gnu \
+       g++-riscv64-linux-gnu \
        bc \
        fakeroot \
        coreutils \
        cpio \
        gzip \
-       gcc-multilib \
-       build-essential \
+       debootstrap \
+       binfmt-support \
+       debian-archive-keyring \
+       eatmydata \
+       file \
+       rsync \
     && rm -rf /var/lib/apt/lists/*
 
 # 串口访问只能是 root 和 dialout 组，这里直把 runner 用户加入 dialout 组
@@ -57,5 +63,5 @@ RUN usermod -aG kvm runner
 #     cmake ninja-build python3 python3-pip \
 #  && rm -rf /var/lib/apt/lists/*
 
-# Return to the default user expected by the runner image 
+# Return to the default user expected by the runner image
 USER runner
