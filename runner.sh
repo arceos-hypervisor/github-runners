@@ -683,11 +683,11 @@ docker_runner_register() {
             continue
         fi
         # Compute labels: base RUNNER_LABELS, overridden by BOARD_RUNNERS entry when matching
-        local labels="${RUNNER_LABELS}" extra
+        local labels="${RUNNER_LABELS}"
         if [[ -n "${BOARD_RUNNERS:-}" ]]; then
             # BOARD_RUNNERS entries are semicolon-separated
             local IFS=';' entry raw name blabels svcbase
-            svcbase="${cname#${RUNNER_NAME_PREFIX}runner-}"
+            svcbase="${cname#"${RUNNER_NAME_PREFIX}"runner-}"
             for entry in ${BOARD_RUNNERS}; do
                 raw="${entry}"; name="${raw%%:*}"; blabels="${raw#*:}"
                 if [[ "$name" == "$svcbase" ]]; then
@@ -805,17 +805,17 @@ case "$CMD" in
             shell_render_compose_file "$count"
             docker_compose_up "${ids[@]}"
         else
-            names="$(docker_list_existing_containers)"
-            if [[ -z "$names" ]]; then
+            mapfile -t names < <(docker_list_existing_containers) || names=()
+            if [[ ${#names[@]} -eq 0 ]]; then
                 shell_info "No Runner containers to stop!"
                 exit 0
             fi
             ids=(); max_id=0
-            while IFS= read -r cname; do
+            for cname in "${names[@]}"; do
                 [[ -n "$cname" ]] || continue
                 ids+=("$cname")
                 n="${cname##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
-            done <<< "$names"
+            done
             (( max_id >= 1 )) || max_id=1
             shell_render_compose_file "$max_id"
             docker_compose_up "${ids[@]}"
@@ -844,17 +844,17 @@ case "$CMD" in
             shell_render_compose_file "$count"
             docker_compose_stop "${ids[@]}"
         else
-            names="$(docker_list_existing_containers)"
-            if [[ -z "$names" ]]; then
+            mapfile -t names < <(docker_list_existing_containers) || names=()
+            if [[ ${#names[@]} -eq 0 ]]; then
                 shell_info "No Runner containers to stop!"
                 exit 0
             fi
             ids=(); max_id=0
-            while IFS= read -r cname; do
+            for cname in "${names[@]}"; do
                 [[ -n "$cname" ]] || continue
                 ids+=("$cname")
                 n="${cname##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
-            done <<< "$names"
+            done
             (( max_id >= 1 )) || max_id=1
             shell_render_compose_file "$max_id"
             docker_compose_stop "${ids[@]}"
@@ -878,16 +878,16 @@ case "$CMD" in
                 exit 0
             fi
         else
-            names="$(docker_list_existing_containers)"
-            if [[ -z "$names" ]]; then
+            mapfile -t names < <(docker_list_existing_containers) || names=()
+            if [[ ${#names[@]} -eq 0 ]]; then
                 shell_info "No Runner containers to restart!"
                 exit 0
             fi
-            while IFS= read -r cname; do
+            for cname in "${names[@]}"; do
                 [[ -n "$cname" ]] || continue
                 ids+=("$cname")
                 n="${cname##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
-            done <<< "$names"
+            done
         fi
         (( max_id >= 1 )) || max_id=1
         shell_render_compose_file "$max_id"
