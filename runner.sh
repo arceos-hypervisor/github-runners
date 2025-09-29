@@ -12,6 +12,7 @@ fi
 # Organization, REG_TOKEN, etc.
 ORG="${ORG:-}"
 GH_PAT="${GH_PAT:-}"
+REPO="${REPO:-}"
 REG_TOKEN_CACHE_FILE="${REG_TOKEN_CACHE_FILE:-.reg_token.cache}"
 REG_TOKEN_CACHE_TTL="${REG_TOKEN_CACHE_TTL:-300}" # seconds, default 5 minutes
 
@@ -82,6 +83,7 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "DISABLE_AUTO_UPDATE" '"1" disables Runner auto-update'
   printf "  %-${KEYW}s %s\n" "RUNNER_WORKDIR" "Work directory (default /runner/_work)"
   printf "  %-${KEYW}s %s\n" "MOUNT_DOCKER_SOCK" '"true"/"1" mounts /var/run/docker.sock (high privilege, use with caution)'
+  printf "  %-${KEYW}s %s\n" "REPO" "Optional repository name (when set, operate on repo-scoped runners under ORG/REPO instead of organization-wide runners)"
   printf "  %-${KEYW}s %s\n" "RUNNER_IMAGE" "Image used for compose generation (default ghcr.io/actions/actions-runner:latest)"
   printf "  %-${KEYW}s %s\n" "RUNNER_CUSTOM_IMAGE" "Image tag used for auto-build (can override)"
   printf "  %-${KEYW}s %s\n" "PRIVILEGED" "Run as privileged (default true, recommended to solve loop device issues)"
@@ -161,7 +163,22 @@ shell_get_org_and_pat() {
     wrote_env=1
   fi
 
-  export ORG GH_PAT
+  # Optional: repository name. If empty, operations default to organization scope.
+  if [[ -z "${REPO:-}" ]]; then
+    while true; do
+      if [[ -e /dev/tty ]]; then
+        printf "Enter repository name (optional, leave empty to use organization runners): " > /dev/tty
+        IFS= read -r REPO < /dev/tty || true
+      else
+        read -rp "Enter repository name (optional, leave empty to use organization runners): " REPO || true
+      fi
+      REPO="$(printf '%s' "${REPO:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+      break
+    done
+    [[ -n "${REPO:-}" ]] && wrote_env=1
+  fi
+
+  export ORG GH_PAT REPO
 
   # Persist to .env (ENV_FILE) if values were entered interactively
   if [[ $wrote_env -eq 1 ]]; then
@@ -179,6 +196,12 @@ shell_get_org_and_pat() {
       tmp="$(mktemp "${env_file}.tmp.XXXXXX")"
       grep -v -E '^[[:space:]]*GH_PAT=' "$env_file" > "$tmp" || true
       printf 'GH_PAT=%s\n' "$GH_PAT" >> "$tmp"
+      mv "$tmp" "$env_file"
+    fi
+    if [[ -n "${REPO:-}" ]]; then
+      tmp="$(mktemp "${env_file}.tmp.XXXXXX")"
+      grep -v -E '^[[:space:]]*REPO=' "$env_file" > "$tmp" || true
+      printf 'REPO=%s\n' "$REPO" >> "$tmp"
       mv "$tmp" "$env_file"
     fi
   fi
@@ -477,7 +500,14 @@ shell_get_reg_token() {
 github_api() {
   local method="$1" path="$2" body="${3:-}"
   [[ -n "${GH_PAT:-}" ]] || shell_die "GH_PAT is required to call organization-related APIs!"
-  local url="https://api.github.com/orgs/${ORG}${path}"
+  # If REPO is set, target repo-scoped endpoints under /repos/{ORG}/{REPO}, otherwise org endpoints
+  local base
+  if [[ -n "${REPO:-}" ]]; then
+    base="https://api.github.com/repos/${ORG}/${REPO}"
+  else
+    base="https://api.github.com/orgs/${ORG}"
+  fi
+  local url="${base}${path}"
   if [[ -n "$body" ]]; then
     curl -sS -X "$method" -H "Authorization: Bearer ${GH_PAT}" \
       -H "Accept: application/vnd.github+json" \
@@ -491,7 +521,7 @@ github_api() {
 
 github_fetch_reg_token() {
   local resp token
-  resp=$(github_api POST "/actions/runners/registration-token") || return 1
+    resp=$(github_api POST "/actions/runners/registration-token") || return 1
   if command -v jq >/dev/null 2>&1; then
     token=$(echo "$resp" | jq -r .token)
   elif command -v python3 >/dev/null 2>&1; then
