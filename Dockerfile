@@ -54,6 +54,14 @@ RUN apt-get update \
        rsync \
     && rm -rf /var/lib/apt/lists/*
 
+#  Rust development
+env RUSTUP_DIST_SERVER="https://rsproxy.cn"
+env RUSTUP_UPDATE_ROOT="https://rsproxy.cn/rustup"
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://rsproxy.cn/rustup-init.sh | sh -s -- -y
+# Add Rust mirror configuration to ~/.cargo/config.toml
+RUN mkdir -p ~/.cargo && echo '[source.crates-io]\nreplace-with = "rsproxy-sparse"\n[source.rsproxy]\nregistry = "https://rsproxy.cn/crates.io-index"\n[source.rsproxy-sparse]\nregistry = "sparse+https://rsproxy.cn/index/"\n[registries.rsproxy]\nindex = "https://rsproxy.cn/crates.io-index"\n[net]\ngit-fetch-with-cli = true' > ~/.cargo/config.toml
+
 # 串口访问只能是 root 和 dialout 组，这里直把 runner 用户加入 dialout 组
 RUN usermod -aG dialout runner
 RUN usermod -aG kvm runner
