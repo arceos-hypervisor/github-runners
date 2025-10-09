@@ -55,10 +55,33 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 #  Rust development
-env RUSTUP_DIST_SERVER="https://rsproxy.cn"
-env RUSTUP_UPDATE_ROOT="https://rsproxy.cn/rustup"
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH \
+    RUST_VERSION=nightly
 
-RUN curl --proto '=https' --tlsv1.2 -sSf https://rsproxy.cn/rustup-init.sh | sh -s -- -y
+RUN set -eux; \
+    dpkgArch="$(dpkg --print-architecture)"; \
+    case "${dpkgArch##*-}" in \
+        amd64) rustArch='x86_64-unknown-linux-gnu'; rustupSha256='20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c' ;; \
+        armhf) rustArch='armv7-unknown-linux-gnueabihf'; rustupSha256='3b8daab6cc3135f2cd4b12919559e6adaee73a2fbefb830fadf0405c20231d61' ;; \
+        arm64) rustArch='aarch64-unknown-linux-gnu'; rustupSha256='e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c' ;; \
+        i386) rustArch='i686-unknown-linux-gnu'; rustupSha256='a5db2c4b29d23e9b318b955dd0337d6b52e93933608469085c924e0d05b1df1f' ;; \
+        *) echo >&2 "unsupported architecture: ${dpkgArch}"; exit 1 ;; \
+    esac; \
+    url="https://static.rust-lang.org/rustup/archive/1.28.2/${rustArch}/rustup-init"; \
+    wget "$url"; \
+    echo "${rustupSha256} *rustup-init" | sha256sum -c -; \
+    chmod +x rustup-init; \
+    ./rustup-init -y --no-modify-path --profile minimal --default-toolchain $RUST_VERSION --default-host ${rustArch}; \
+    rm rustup-init; \
+    chmod -R a+w $RUSTUP_HOME $CARGO_HOME; \
+    rustup --version; \
+    cargo --version; \
+    rustc --version;
+RUN rustup toolchain install nightly-2025-05-20 && \
+    rustup toolchain install nightly
+
 # Add Rust mirror configuration to ~/.cargo/config.toml
 RUN mkdir -p ~/.cargo && echo '[source.crates-io]\nreplace-with = "rsproxy-sparse"\n[source.rsproxy]\nregistry = "https://rsproxy.cn/crates.io-index"\n[source.rsproxy-sparse]\nregistry = "sparse+https://rsproxy.cn/index/"\n[registries.rsproxy]\nindex = "https://rsproxy.cn/crates.io-index"\n[net]\ngit-fetch-with-cli = true' > ~/.cargo/config.toml
 
