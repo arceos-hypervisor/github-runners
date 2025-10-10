@@ -54,10 +54,15 @@ RUN apt-get update \
        rsync \
     && rm -rf /var/lib/apt/lists/*
 
-#  Rust development
-ENV RUSTUP_HOME=/usr/local/rustup \
-    CARGO_HOME=/usr/local/cargo \
-    PATH=/usr/local/cargo/bin:$PATH \
+# 串口访问只能是 root 和 dialout 组，这里直把 runner 用户加入 dialout 组
+RUN usermod -aG dialout runner
+RUN usermod -aG kvm runner
+
+# Return to the default user expected by the runner image
+USER runner
+
+#  Rust development for runner user
+ENV PATH=/home/runner/.cargo/bin:$PATH \
     RUST_VERSION=nightly
 
 RUN set -eux; \
@@ -75,7 +80,6 @@ RUN set -eux; \
     chmod +x rustup-init; \
     ./rustup-init -y --no-modify-path --profile minimal --default-toolchain $RUST_VERSION --default-host ${rustArch}; \
     rm rustup-init; \
-    chmod -R a+w $RUSTUP_HOME $CARGO_HOME; \
     rustup --version; \
     cargo --version; \
     rustc --version;
@@ -92,20 +96,11 @@ RUN rustup target add aarch64-unknown-none-softfloat \
     riscv64gc-unknown-none-elf \
     x86_64-unknown-none \
     loongarch64-unknown-none-softfloat --toolchain nightly
-RUN rustup component add clippy llvm-tools rust-src --toolchain nightly-2025-05-20
-RUN rustup component add clippy llvm-tools rust-src --toolchain nightly
 
-# 串口访问只能是 root 和 dialout 组，这里直把 runner 用户加入 dialout 组
-RUN usermod -aG dialout runner
-RUN usermod -aG kvm runner
-
-# Optional: add more toolchains here (cmake, ninja, python, etc)
-# RUN apt-get update && apt-get install -y --no-install-recommends \
-#     cmake ninja-build python3 python3-pip \
-#  && rm -rf /var/lib/apt/lists/*
-
-# Return to the default user expected by the runner image
-USER runner
+RUN rustup component add clippy llvm-tools rust-src rustfmt --toolchain nightly-2025-05-20
+RUN rustup component add clippy llvm-tools rust-src rustfmt --toolchain nightly
 
 # Add Rust mirror configuration to ~/.cargo/config.toml
-RUN mkdir -p /home/runner/.cargo && echo '[source.crates-io]\nreplace-with = "rsproxy-sparse"\n[source.rsproxy]\nregistry = "https://rsproxy.cn/crates.io-index"\n[source.rsproxy-sparse]\nregistry = "sparse+https://rsproxy.cn/index/"\n[registries.rsproxy]\nindex = "https://rsproxy.cn/crates.io-index"\n[net]\ngit-fetch-with-cli = true' > /home/runner/.cargo/config.toml
+RUN echo '[source.crates-io]\nreplace-with = "rsproxy-sparse"\n[source.rsproxy]\nregistry = "https://rsproxy.cn/crates.io-index"\n[source.rsproxy-sparse]\nregistry = "sparse+https://rsproxy.cn/index/"\n[registries.rsproxy]\nindex = "https://rsproxy.cn/crates.io-index"\n[net]\ngit-fetch-with-cli = true' > /home/runner/.cargo/config.toml
+
+RUN cargo install cargo-binutils
