@@ -59,7 +59,7 @@ shell_usage() {
 
   echo "3. Query commands:"
   printf "  %-${COLW}s %s\n" "./runner.sh ps" "Show status of related containers"
-  printf "  %-${COLW}s %s\n" "./runner.sh list" "Show container status and registered Runner status"
+  printf "  %-${COLW}s %s\n" "./runner.sh list|status" "Show container status and registered Runner status"
   echo
 
   echo "4. Deletion commands:"
@@ -731,8 +731,8 @@ case "$CMD" in
         docker_print_existing_containers_status
         ;;
 
-    # ./runner.sh list
-    list)
+    # ./runner.sh list|status
+    list|status)
         echo "--------------------------------- Containers -----------------------------------------"
         docker_print_existing_containers_status
         echo
