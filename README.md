@@ -20,7 +20,8 @@ The toolkit supports both organization-scoped and repository-scoped runners. To 
 ## Prerequisites
 
 - Docker and Docker Compose must be installed on the host. The scripts support both `docker compose` and legacy `docker-compose`.
-- A GitHub Personal Access Token (classic PAT) with the required permissions is needed (`GH_PAT`). Organization-level operations typically need organization admin or appropriate permissions; repository-level operations need repository admin permissions.
+- A GitHub Personal Access Token (classic PAT) with the required permissions is needed (`GH_PAT`).
+- Organization-level operations typically need organization admin or appropriate permissions; repository-level operations need repository admin permissions.
 
 ## Quickstart
 

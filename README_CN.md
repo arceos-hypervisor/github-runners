@@ -20,7 +20,8 @@
 ### 前提条件
 
 - 主机需安装 Docker 与 Docker Compose（支持 `docker compose` 或 `docker-compose`）。
-- 需要一个具有相应权限的 GitHub Classic Personal Access Token（`GH_PAT`）。组织级操作通常需要组织管理员权限，仓库级操作需要仓库管理员权限。
+- 需要一个具有相应权限的 GitHub Classic Personal Access Token（`GH_PAT`）。
+- 组织级操作通常需要组织管理员权限，仓库级操作需要仓库管理员权限。
 
 ### 快速开始
 
