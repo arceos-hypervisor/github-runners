@@ -720,12 +720,12 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
         # ./runner.sh list|status
         list|status)
+            REG_TOKEN="$(shell_get_reg_token)"
             echo "--------------------------------- Containers -----------------------------------------"
             docker_print_existing_containers_status
             echo
 
             echo "--------------------------------- Runners --------------------------------------------"
-            REG_TOKEN="$(shell_get_reg_token)"
             resp=$(github_api GET "/actions/runners?per_page=100") || shell_die "Failed to fetch organization runner list."
             if command -v jq >/dev/null 2>&1; then
                 echo "$resp" | jq -r '.runners[] | [.name, .status, (if .busy then "busy" else "idle" end), ( [.labels[].name] | join(","))] | @tsv' \
