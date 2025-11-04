@@ -476,7 +476,7 @@ shell_get_reg_token() {
     fi
 
     shell_get_org_and_pat
-    shell_info "Requesting organization registration token..." >&2
+    shell_info "Requesting <${ORG:-${REPO}}> registration token..." >&2
     local new_token
     new_token="$(github_fetch_reg_token || true)"
     [[ -n "$new_token" && "$new_token" != "null" ]] || shell_die "Failed to fetch registration token!"
