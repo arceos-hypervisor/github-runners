@@ -720,7 +720,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
         # ./runner.sh list|status
         list|status)
-            REG_TOKEN="$(shell_get_reg_token)"
+            shell_get_org_and_pat
             echo "--------------------------------- Containers -----------------------------------------"
             docker_print_existing_containers_status
             echo
