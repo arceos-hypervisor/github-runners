@@ -209,19 +209,9 @@ shell_get_org_and_pat() {
 
 # Decide which image to use based on Dockerfile and local images; build if needed; echo the chosen image name
 shell_prepare_runner_image() {
-    local cmd="${1:-}"
     local base="ghcr.io/actions/actions-runner:latest"
     local current="${RUNNER_IMAGE:-$base}"
     local hash_file="${DOCKERFILE_HASH_FILE:-.dockerfile.sha256}"
-
-    case "$cmd" in
-        init|scale|start|stop|restart|logs)
-            ;; # these render compose and may need image preparation
-        *)
-            echo "$current"
-            return 0
-            ;;
-    esac
 
     if [[ -f Dockerfile ]]; then
         local new_hash="" old_hash=""
@@ -715,264 +705,273 @@ docker_runner_register() {
     done
 }
 
-# ---------- Commands ----------
-CMD="${1:-help}"; shift || true
-REG_TOKEN="$(shell_get_reg_token)"
-RUNNER_IMAGE="$(shell_prepare_runner_image "$CMD")"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    CMD="${1:-help}"; shift || true
+    case "$CMD" in
+        # ./runner.sh help|-h|--help
+        help|-h|--help)
+            shell_usage
+            ;;
 
-case "$CMD" in
-    # ./runner.sh help|-h|--help
-    help|-h|--help)
-        shell_usage
-        ;;
+        # ./runner.sh ps
+        ps)
+            docker_print_existing_containers_status
+            ;;
 
-    # ./runner.sh ps
-    ps)
-        docker_print_existing_containers_status
-        ;;
+        # ./runner.sh list|status
+        list|status)
+            echo "--------------------------------- Containers -----------------------------------------"
+            docker_print_existing_containers_status
+            echo
 
-    # ./runner.sh list|status
-    list|status)
-        echo "--------------------------------- Containers -----------------------------------------"
-        docker_print_existing_containers_status
-        echo
-        shell_get_org_and_pat
-        echo "--------------------------------- Runners --------------------------------------------"
-        resp=$(github_api GET "/actions/runners?per_page=100") || shell_die "Failed to fetch organization runner list."
-        if command -v jq >/dev/null 2>&1; then
-            echo "$resp" | jq -r '.runners[] | [.name, .status, (if .busy then "busy" else "idle" end), ( [.labels[].name] | join(","))] | @tsv' \
-                | awk -F'\t' 'BEGIN{printf("%-40s %-8s %-6s %s\n","NAME","STATUS","BUSY","LABELS")}{printf("%-40s %-8s %-6s %s\n",$1,$2,$3,$4)}'
-        else
-            echo "$resp"
-        fi
-        echo
-        shell_info "Due to GitHub limitations, organization runner list is limited to 100 entries!"
-        echo
-        ;;
+            echo "--------------------------------- Runners --------------------------------------------"
+            REG_TOKEN="$(shell_get_reg_token)"
+            resp=$(github_api GET "/actions/runners?per_page=100") || shell_die "Failed to fetch organization runner list."
+            if command -v jq >/dev/null 2>&1; then
+                echo "$resp" | jq -r '.runners[] | [.name, .status, (if .busy then "busy" else "idle" end), ( [.labels[].name] | join(","))] | @tsv' \
+                    | awk -F'\t' 'BEGIN{printf("%-40s %-8s %-6s %s\n","NAME","STATUS","BUSY","LABELS")}{printf("%-40s %-8s %-6s %s\n",$1,$2,$3,$4)}'
+            else
+                echo "$resp"
+            fi
+            echo
+            shell_info "Due to GitHub limitations, organization runner list is limited to 100 entries!"
+            echo
+            ;;
 
-    # ./runner.sh init [-n|--count N]
-    init)
-        count="$RUNNER_COUNT"
-        if [[ "${1:-}" == "-n" || "${1:-}" == "--count" ]]; then
-            shift
-            count="${1:-$RUNNER_COUNT}"
-            shift || true
-        fi
-        [[ "$count" =~ ^[0-9]+$ ]] || shell_die "Count must be numeric!"
-        # Compute number of board-specific runners
-        board_count="$(shell_count_board_runners)"
-        generic_count=$(( count - board_count ))
-        (( generic_count > 0 )) || shell_die "(total - board_count) resulting generic instance count must be > 0!"
+        # ./runner.sh init [-n|--count N]
+        init)
+            count="$RUNNER_COUNT"
+            if [[ "${1:-}" == "-n" || "${1:-}" == "--count" ]]; then
+                shift
+                count="${1:-$RUNNER_COUNT}"
+                shift || true
+            fi
+            [[ "$count" =~ ^[0-9]+$ ]] || shell_die "Count must be numeric!"
+            # Compute number of board-specific runners
+            board_count="$(shell_count_board_runners)"
+            generic_count=$(( count - board_count ))
+            (( generic_count > 0 )) || shell_die "(total - board_count) resulting generic instance count must be > 0!"
 
-        # Subtract board-specific count only when rendering compose (board instances are appended separately)
-        shell_render_compose_file "$generic_count"
+            RUNNER_IMAGE="$(shell_prepare_runner_image)"
+            REG_TOKEN="$(shell_get_reg_token)"
+            # Subtract board-specific count only when rendering compose (board instances are appended separately)
+            shell_render_compose_file "$generic_count"
 
-        # Only start/register generic instances here (board instances were added separately in the compose file)
-        docker_compose_up
-        docker_runner_register
-        ;;
-
-    # ./runner.sh register [${RUNNER_NAME_PREFIX}runner-<id> ...]
-    register)
-        if [[ $# -ge 1 ]]; then
-            # Pass incoming parameters (container names or numbers) directly to docker_runner_register
-            # Allow multiple parameters at once
-            docker_runner_register "$@"
-        else
+            # Only start/register generic instances here (board instances were added separately in the compose file)
+            docker_compose_up
             docker_runner_register
-        fi
-        ;;
+            ;;
 
-    # ./runner.sh start [${RUNNER_NAME_PREFIX}runner-<id> ...]
-    start)
-        if [[ $# -ge 1 ]]; then
-            ids=(); max_id=0
-            for s in "$@"; do
-                if ! docker_container_exists "$s"; then
-                    shell_warn "No Runner container found for $s, ignoring this argument!"
-                    continue
+        # ./runner.sh register [${RUNNER_NAME_PREFIX}runner-<id> ...]
+        register)
+            RUNNER_IMAGE="$(shell_prepare_runner_image)"
+            REG_TOKEN="$(shell_get_reg_token)"
+            if [[ $# -ge 1 ]]; then
+                # Pass incoming parameters (container names or numbers) directly to docker_runner_register
+                # Allow multiple parameters at once
+                docker_runner_register "$@"
+            else
+                docker_runner_register
+            fi
+            ;;
+
+        # ./runner.sh start [${RUNNER_NAME_PREFIX}runner-<id> ...]
+        start)
+            RUNNER_IMAGE="$(shell_prepare_runner_image)"
+            REG_TOKEN="$(shell_get_reg_token)"
+            if [[ $# -ge 1 ]]; then
+                ids=(); max_id=0
+                for s in "$@"; do
+                    if ! docker_container_exists "$s"; then
+                        shell_warn "No Runner container found for $s, ignoring this argument!"
+                        continue
+                    fi
+                    ids+=("$s")
+                    n="${s##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
+                done
+                if [[ ${#ids[@]} -eq 0 ]]; then
+                    shell_info "No Runner containers to stop!"
+                    exit 0
                 fi
-                ids+=("$s")
-                n="${s##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
-            done
-            if [[ ${#ids[@]} -eq 0 ]]; then
-                shell_info "No Runner containers to stop!"
-                exit 0
+                exist_max="$(docker_highest_existing_index)"
+                count="$exist_max"; (( max_id > count )) && count="$max_id"
+                (( count >= 1 )) || count=1
+                shell_render_compose_file "$count"
+                docker_compose_up "${ids[@]}"
+            else
+                mapfile -t names < <(docker_list_existing_containers) || names=()
+                if [[ ${#names[@]} -eq 0 ]]; then
+                    shell_info "No Runner containers to stop!"
+                    exit 0
+                fi
+                ids=(); max_id=0
+                for cname in "${names[@]}"; do
+                    [[ -n "$cname" ]] || continue
+                    ids+=("$cname")
+                    n="${cname##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
+                done
+                (( max_id >= 1 )) || max_id=1
+                shell_render_compose_file "$max_id"
+                docker_compose_up "${ids[@]}"
             fi
-            exist_max="$(docker_highest_existing_index)"
-            count="$exist_max"; (( max_id > count )) && count="$max_id"
-            (( count >= 1 )) || count=1
-            shell_render_compose_file "$count"
-            docker_compose_up "${ids[@]}"
-        else
-            mapfile -t names < <(docker_list_existing_containers) || names=()
-            if [[ ${#names[@]} -eq 0 ]]; then
-                shell_info "No Runner containers to stop!"
-                exit 0
+            ;;
+
+        # ./runner.sh stop [${RUNNER_NAME_PREFIX}runner-<id> ...]
+        stop)
+            RUNNER_IMAGE="$(shell_prepare_runner_image)"
+            REG_TOKEN="$(shell_get_reg_token)"
+            if [[ $# -ge 1 ]]; then
+                ids=(); max_id=0
+                for s in "$@"; do
+                    if ! docker_container_exists "$s"; then
+                        shell_warn "No Runner container found for $s, ignoring this argument!"
+                        continue
+                    fi
+                    ids+=("$s")
+                    n="${s##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
+                done
+                if [[ ${#ids[@]} -eq 0 ]]; then
+                    shell_info "No Runner containers to stop!"
+                    exit 0
+                fi
+                exist_max="$(docker_highest_existing_index)"
+                count="$exist_max"; (( max_id > count )) && count="$max_id"
+                (( count >= 1 )) || count=1
+                shell_render_compose_file "$count"
+                docker_compose_stop "${ids[@]}"
+            else
+                mapfile -t names < <(docker_list_existing_containers) || names=()
+                if [[ ${#names[@]} -eq 0 ]]; then
+                    shell_info "No Runner containers to stop!"
+                    exit 0
+                fi
+                ids=(); max_id=0
+                for cname in "${names[@]}"; do
+                    [[ -n "$cname" ]] || continue
+                    ids+=("$cname")
+                    n="${cname##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
+                done
+                (( max_id >= 1 )) || max_id=1
+                shell_render_compose_file "$max_id"
+                docker_compose_stop "${ids[@]}"
             fi
+            ;;
+
+        # ./runner.sh restart [${RUNNER_NAME_PREFIX}runner-<id> ...]
+        restart)
+            RUNNER_IMAGE="$(shell_prepare_runner_image)"
+            REG_TOKEN="$(shell_get_reg_token)"
             ids=(); max_id=0
-            for cname in "${names[@]}"; do
-                [[ -n "$cname" ]] || continue
-                ids+=("$cname")
-                n="${cname##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
-            done
+            if [[ $# -ge 1 ]]; then
+                for s in "$@"; do
+                    if ! docker_container_exists "$s"; then
+                        shell_warn "No Runner container found for $s, ignoring this argument!"
+                        continue
+                    fi
+                    ids+=("$s")
+                    n="${s##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
+                done
+                if [[ ${#ids[@]} -eq 0 ]]; then
+                    shell_info "No Runner containers to restart!"
+                    exit 0
+                fi
+            else
+                mapfile -t names < <(docker_list_existing_containers) || names=()
+                if [[ ${#names[@]} -eq 0 ]]; then
+                    shell_info "No Runner containers to restart!"
+                    exit 0
+                fi
+                for cname in "${names[@]}"; do
+                    [[ -n "$cname" ]] || continue
+                    ids+=("$cname")
+                    n="${cname##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
+                done
+            fi
             (( max_id >= 1 )) || max_id=1
             shell_render_compose_file "$max_id"
-            docker_compose_up "${ids[@]}"
-        fi
-        ;;
+            docker_compose_restart "${ids[@]}"
+            ;;
 
-    # ./runner.sh stop [${RUNNER_NAME_PREFIX}runner-<id> ...]
-    stop)
-        if [[ $# -ge 1 ]]; then
-            ids=(); max_id=0
-            for s in "$@"; do
-                if ! docker_container_exists "$s"; then
-                    shell_warn "No Runner container found for $s, ignoring this argument!"
-                    continue
-                fi
-                ids+=("$s")
-                n="${s##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
-            done
-            if [[ ${#ids[@]} -eq 0 ]]; then
-                shell_info "No Runner containers to stop!"
-                exit 0
-            fi
+        # ./runner.sh logs ${RUNNER_NAME_PREFIX}runner-<id>
+        logs)
+            [[ $# -eq 1 ]] || shell_die "Usage: ./runner.sh logs ${RUNNER_NAME_PREFIX}runner-<id>"
+            [[ "$1" =~ ^${RUNNER_NAME_PREFIX}runner-([0-9]+)$ ]] || shell_die "Invalid service name: $1"
+            id="${BASH_REMATCH[1]}"
             exist_max="$(docker_highest_existing_index)"
-            count="$exist_max"; (( max_id > count )) && count="$max_id"
+            count="$exist_max"; (( id > count )) && count="$id"
             (( count >= 1 )) || count=1
             shell_render_compose_file "$count"
-            docker_compose_stop "${ids[@]}"
-        else
-            mapfile -t names < <(docker_list_existing_containers) || names=()
-            if [[ ${#names[@]} -eq 0 ]]; then
-                shell_info "No Runner containers to stop!"
-                exit 0
-            fi
-            ids=(); max_id=0
-            for cname in "${names[@]}"; do
-                [[ -n "$cname" ]] || continue
-                ids+=("$cname")
-                n="${cname##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
-            done
-            (( max_id >= 1 )) || max_id=1
-            shell_render_compose_file "$max_id"
-            docker_compose_stop "${ids[@]}"
-        fi
-        ;;
+            docker_compose_logs "$1"
+            ;;
 
-    # ./runner.sh restart [${RUNNER_NAME_PREFIX}runner-<id> ...]
-    restart)
-        ids=(); max_id=0
-        if [[ $# -ge 1 ]]; then
-            for s in "$@"; do
-                if ! docker_container_exists "$s"; then
-                    shell_warn "No Runner container found for $s, ignoring this argument!"
-                    continue
+        # ./runner.sh rm|remove|delete [${RUNNER_NAME_PREFIX}runner-<id> ...] [-y|--yes]
+        rm|remove|delete)
+            REG_TOKEN="$(shell_get_reg_token)"
+            if [[ "$#" -eq 0 || "$1" == "-y" || "$1" == "--yes" ]]; then
+                if [[ "$#" -ge 1 ]]; then
+                    shell_delete_all_execute ""
+                else
+                    shell_delete_all_execute "Confirm deletion of all above Runners/containers/volumes? [y / N] " || exit 0
                 fi
-                ids+=("$s")
-                n="${s##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
-            done
-            if [[ ${#ids[@]} -eq 0 ]]; then
-                shell_info "No Runner containers to restart!"
-                exit 0
+            else
+                matched=()
+                for s in "$@"; do
+                    if ! docker_container_exists "$s"; then
+                        shell_warn "No Runner container found for $s, ignoring this argument!"
+                        continue
+                    fi
+                    matched+=("$s")
+                done
+                if [[ ${#matched[@]} -eq 0 ]]; then
+                    shell_info "No Runner containers to delete!"
+                    exit 0
+                fi
+                for s in "${matched[@]}"; do
+                    name="$s"
+                    shell_info "Unregistering from GitHub: $name"
+                    rid="$(github_get_runner_id_by_name "$name" || true)"
+                    if [[ -n "$rid" ]]; then
+                        github_delete_runner_by_id "$rid" || shell_warn "Failed to unregister $name on GitHub; please remove it manually via the GitHub web UI!"
+                    else
+                        shell_warn "Not found in organization list: $name; it may have been removed already!"
+                    fi
+                    # Related volume names: <container>-data and optionally <container>-udev-rules
+                    vol_list="${name}-data"
+                    if [[ "$MOUNT_UDEV_RULES_DIR" == "1" || "$MOUNT_UDEV_RULES_DIR" == "true" ]]; then
+                        vol_list+=" / ${name}-udev-rules"
+                    fi
+                    shell_info "Removing container and data volumes: $name / ${vol_list}"
+                    if [[ -f "$COMPOSE_FILE" ]]; then
+                        $DC -f "$COMPOSE_FILE" rm -s -f "$name" >/dev/null 2>&1 || true
+                    fi
+                done
             fi
-        else
-            mapfile -t names < <(docker_list_existing_containers) || names=()
-            if [[ ${#names[@]} -eq 0 ]]; then
-                shell_info "No Runner containers to restart!"
-                exit 0
-            fi
-            for cname in "${names[@]}"; do
-                [[ -n "$cname" ]] || continue
-                ids+=("$cname")
-                n="${cname##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
-            done
-        fi
-        (( max_id >= 1 )) || max_id=1
-        shell_render_compose_file "$max_id"
-        docker_compose_restart "${ids[@]}"
-        ;;
+            ;;
 
-    # ./runner.sh logs ${RUNNER_NAME_PREFIX}runner-<id>
-    logs)
-        [[ $# -eq 1 ]] || shell_die "Usage: ./runner.sh logs ${RUNNER_NAME_PREFIX}runner-<id>"
-        [[ "$1" =~ ^${RUNNER_NAME_PREFIX}runner-([0-9]+)$ ]] || shell_die "Invalid service name: $1"
-        id="${BASH_REMATCH[1]}"
-        exist_max="$(docker_highest_existing_index)"
-        count="$exist_max"; (( id > count )) && count="$id"
-        (( count >= 1 )) || count=1
-        shell_render_compose_file "$count"
-        docker_compose_logs "$1"
-        ;;
-
-    # ./runner.sh rm|remove|delete [${RUNNER_NAME_PREFIX}runner-<id> ...] [-y|--yes]
-    rm|remove|delete)
-        shell_get_org_and_pat
-        if [[ "$#" -eq 0 || "$1" == "-y" || "$1" == "--yes" ]]; then
-            if [[ "$#" -ge 1 ]]; then
+        # ./runner.sh purge [-y|--yes]
+        purge)
+            REG_TOKEN="$(shell_get_reg_token)"
+            if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; then
                 shell_delete_all_execute ""
             else
-                shell_delete_all_execute "Confirm deletion of all above Runners/containers/volumes? [y / N] " || exit 0
+                shell_delete_all_execute "Confirm unregister of all Runners, delete all containers and volumes, and remove all generated files? [y / N] " || { echo "Operation cancelled!"; exit 0; }
             fi
-        else
-            matched=()
-            for s in "$@"; do
-                if ! docker_container_exists "$s"; then
-                    shell_warn "No Runner container found for $s, ignoring this argument!"
-                    continue
-                fi
-                matched+=("$s")
-            done
-            if [[ ${#matched[@]} -eq 0 ]]; then
-                shell_info "No Runner containers to delete!"
-                exit 0
-            fi
-            for s in "${matched[@]}"; do
-                name="$s"
-                shell_info "Unregistering from GitHub: $name"
-                rid="$(github_get_runner_id_by_name "$name" || true)"
-                if [[ -n "$rid" ]]; then
-                    github_delete_runner_by_id "$rid" || shell_warn "Failed to unregister $name on GitHub; please remove it manually via the GitHub web UI!"
-                else
-                    shell_warn "Not found in organization list: $name; it may have been removed already!"
-                fi
-                # Related volume names: <container>-data and optionally <container>-udev-rules
-                vol_list="${name}-data"
-                if [[ "$MOUNT_UDEV_RULES_DIR" == "1" || "$MOUNT_UDEV_RULES_DIR" == "true" ]]; then
-                    vol_list+=" / ${name}-udev-rules"
-                fi
-                shell_info "Removing container and data volumes: $name / ${vol_list}"
-                if [[ -f "$COMPOSE_FILE" ]]; then
-                    $DC -f "$COMPOSE_FILE" rm -s -f "$name" >/dev/null 2>&1 || true
+            for f in "$COMPOSE_FILE" \
+                "${REG_TOKEN_CACHE_FILE}" \
+                "${DOCKERFILE_HASH_FILE}" \
+                "$ENV_FILE"; do
+                if [[ -f "$f" ]]; then
+                    shell_info "Removing file $f"
+                    rm -f "$f" || true
                 fi
             done
-        fi
-        ;;
+            shell_info "purge complete!"
+            ;;
 
-    # ./runner.sh purge [-y|--yes]
-    purge)
-        shell_get_org_and_pat
-        if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; then
-            shell_delete_all_execute ""
-        else
-            shell_delete_all_execute "Confirm unregister of all Runners, delete all containers and volumes, and remove all generated files? [y / N] " || { echo "Operation cancelled!"; exit 0; }
-        fi
-        for f in "$COMPOSE_FILE" \
-            "${REG_TOKEN_CACHE_FILE}" \
-            "${DOCKERFILE_HASH_FILE}" \
-            "$ENV_FILE"; do
-            if [[ -f "$f" ]]; then
-                shell_info "Removing file $f"
-                rm -f "$f" || true
-            fi
-        done
-        shell_info "purge complete!"
-        ;;
-
-    # ./runner.sh
-    *)
-        shell_usage
-        exit 1
-        ;;
-esac
+        # ./runner.sh
+        *)
+            shell_usage
+            exit 1
+            ;;
+    esac
+fi
