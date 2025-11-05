@@ -19,8 +19,7 @@ REG_TOKEN_CACHE_TTL="${REG_TOKEN_CACHE_TTL:-300}" # seconds, default 5 minutes
 # Runner container related parameters
 RUNNER_IMAGE="${RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}"
 RUNNER_CUSTOM_IMAGE="${RUNNER_CUSTOM_IMAGE:-qc-actions-runner:v0.0.1}"
-RUNNER_COUNT="${RUNNER_COUNT:-2}"
-BOARD_RUNNERS="phytiumpi:phytiumpi;roc-rk3568-pc:roc-rk3568-pc"  # e.g. board1_name:labels1,label2;board2_name:labels1,label2[;...], semicolon-separated entries, labels inside each entry comma-separated
+## Removed: dynamic compose generation and board overrides; compose must exist
 COMPOSE_FILE="docker-compose.yml"
 DOCKERFILE_HASH_FILE="${DOCKERFILE_HASH_FILE:-.dockerfile.sha256}"
 RUNNER_LABELS="${RUNNER_LABELS:-intel}"
@@ -45,9 +44,9 @@ shell_usage() {
   echo
 
   echo "1. Creation commands:"
-  printf "  %-${COLW}s %s\n" "./runner.sh init [-n N]" "Generate N services and start (defaults to RUNNER_COUNT from .env)"
-  printf "  %-${COLW}s %s\n" "" "First run will request a registration token from the organization and persist it into each volume"
-  echo
+  printf "  %-${COLW}s %s\n" "./runner.sh init" "Start services defined in docker-compose.yml (compose file must exist)"
+  printf "  %-${COLW}s %s\n" "" "First run will request a registration token from the organization and export it for compose"
+  echo 
 
   echo "2. Instance operation commands:"
   printf "  %-${COLW}s %s\n" "./runner.sh register [${RUNNER_NAME_PREFIX}runner-<id> ...]" "Register specified instances; no args will iterate over all existing instances"
@@ -78,8 +77,6 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "RUNNER_LABELS" "Example: self-hosted,linux,docker"
   printf "  %-${KEYW}s %s\n" "RUNNER_GROUP" "Runner group (optional)"
   printf "  %-${KEYW}s %s\n" "RUNNER_NAME_PREFIX" "Runner name prefix"
-  printf "  %-${KEYW}s %s\n" "RUNNER_COUNT" "Default count for creation"
-  printf "  %-${KEYW}s %s\n" "BOARD_RUNNERS" "Board Runner list: name:label1[,label2] semicolon-separated entries; labels inside each entry comma-separated"
   printf "  %-${KEYW}s %s\n" "DISABLE_AUTO_UPDATE" '"1" disables Runner auto-update'
   printf "  %-${KEYW}s %s\n" "RUNNER_WORKDIR" "Work directory (default /runner/_work)"
   printf "  %-${KEYW}s %s\n" "MOUNT_DOCKER_SOCK" '"true"/"1" mounts /var/run/docker.sock (high privilege, use with caution)'
@@ -97,11 +94,10 @@ shell_usage() {
   echo "Example workflow runs-on: runs-on: [self-hosted, linux, docker]"
 
   echo
-  echo "Tips:" 
-  echo "- The dynamically generated docker-compose.yml will overwrite an existing file with the same name (existing containers are not affected)."
+  echo "Tips:"
+  echo "- docker-compose.yml must exist. The script will not generate or modify it."
   echo "- Re-start/up will reuse existing volumes; Runner configuration and tool caches will not be lost."
-  echo "- BOARD_RUNNERS example: phytiumpi:phytiumpi,extra1;roc-rk3568-pc:roc-rk3568-pc; semicolon separates boards, labels after colon are board-specific (comma-separated)."
-  echo "- Board instances now only use their own labels (from BOARD_RUNNERS), they no longer include the base RUNNER_LABELS."
+    # Board-specific label overrides removed; specify labels in your compose file per service.
 }
 
 shell_die() { echo "[ERROR] $*" >&2; exit 1; }
@@ -249,176 +245,7 @@ shell_prepare_runner_image() {
     fi
 }
 
-# Count valid BOARD_RUNNERS entries (form: name:labels) and return the number
-shell_count_board_runners() {
-    local br="${BOARD_RUNNERS:-}" c=0 e
-    [[ -n "$br" ]] || { echo 0; return 0; }
-    IFS=';' read -r -a __arr <<< "$br"
-    for e in "${__arr[@]}"; do
-    # Trim leading/trailing whitespace
-        e="$(echo "$e" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-        [[ -z "$e" ]] && continue
-    # Must contain colon and non-empty part after colon
-        [[ "$e" == *:* ]] || continue
-        local name="${e%%:*}" rest="${e#*:}"
-        [[ -n "$name" && -n "$rest" ]] || continue
-        ((c++))
-    done
-    echo "$c"
-}
-
-# Generate docker-compose.yml file
-shell_render_compose_file() {
-    local count="$1"
-    [[ "$count" =~ ^[0-9]+$ ]] || shell_die "Failed to generate compose: invalid count!"
-    (( count >= 1 )) || shell_die "Failed to generate compose: count must be >= 1!"
-
-    shell_info "Generating ${COMPOSE_FILE} (${RUNNER_NAME_PREFIX}runner-1 ... ${RUNNER_NAME_PREFIX}runner-${count})"
-    {
-        printf "%s\n" "x-runner-base: &runner_base"
-        printf "  %s\n" "image: ${RUNNER_IMAGE}"
-        printf "  %s\n" "restart: unless-stopped"
-        printf "  %s\n" "environment: &runner_env"
-        printf "    %s\n" "RUNNER_ORG_URL: \"https://github.com/${ORG}\""
-        printf "    %s\n" "RUNNER_TOKEN: \"${REG_TOKEN}\""
-        printf "    %s\n" "RUNNER_GROUP: \"${RUNNER_GROUP}\""
-        printf "    %s\n" "RUNNER_REMOVE_ON_STOP: \"false\""
-        printf "    %s\n" "DISABLE_AUTO_UPDATE: \"${DISABLE_AUTO_UPDATE}\""
-        printf "    %s\n" "RUNNER_WORKDIR: \"${RUNNER_WORKDIR}\""
-        printf "    %s\n" "HTTP_PROXY: \"${HTTP_PROXY}\""
-        printf "    %s\n" "HTTPS_PROXY: \"${HTTPS_PROXY}\""
-        printf "    %s\n" "NO_PROXY: localhost,127.0.0.1,.internal"
-        printf "  %s\n" "network_mode: host"
-
-        # Grant containers near-host kernel capabilities and unlock access to devices (it's preferable to use cap-add for fine-grained control)
-        if [[ "$PRIVILEGED" == "1" || "$PRIVILEGED" == "true" ]]; then
-            printf "  %s\n" "privileged: true"
-        fi
-
-        # Map devices (kvm, loop, usb)
-        printf "  %s\n" "devices:"
-        if [[ "$MAP_LOOP_DEVICES" == "1" || "$MAP_LOOP_DEVICES" == "true" ]]; then
-            if [[ -e "/dev/loop-control" ]]; then
-                printf "    - %s\n" "/dev/loop-control:/dev/loop-control"
-            fi
-            local j
-            for j in $(seq 0 $((LOOP_DEVICE_COUNT-1))); do
-                if [[ -e "/dev/loop${j}" ]]; then
-                    printf "    - %s\n" "/dev/loop${j}:/dev/loop${j}"
-                fi
-            done
-        fi
-        if [[ "$MAP_KVM_DEVICE" == "1" || "$MAP_KVM_DEVICE" == "true" ]]; then
-            if [[ -e "/dev/kvm" ]]; then
-                printf "    - %s\n" "/dev/kvm:/dev/kvm"
-            fi
-        fi
-        if [[ "$MAP_USB_DEVICE" == "1" || "$MAP_USB_DEVICE" == "true" ]]; then
-            for ttyUSB in /dev/ttyUSB*; do
-                if [[ -e "$ttyUSB" ]]; then
-                    printf "    - %s\n" "$ttyUSB:$ttyUSB"
-                fi
-            done
-            if [[ -e "/dev/ttyACM0" ]]; then
-                printf "    - %s\n" "/dev/ttyACM0:/dev/ttyACM0"
-            fi
-        fi
-
-        # Add Linux groups so container can access devices owned by specific groups (e.g. /dev/kvm)
-        printf "  group_add:\n"
-        if [[ "$MAP_KVM_DEVICE" == "1" || "$MAP_KVM_DEVICE" == "true" ]]; then
-            if [[ -e "/dev/kvm" ]]; then
-                local kvm_gid
-                kvm_gid="$(stat -c '%g' /dev/kvm 2>/dev/null || true)"
-                if [[ -n "$kvm_gid" ]]; then
-                    printf "    - %s\n" "$kvm_gid"
-                fi
-            fi
-        fi
-        if [[ "$MAP_USB_DEVICE" == "1" || "$MAP_USB_DEVICE" == "true" ]]; then
-            printf "    - dialout\n"
-        fi
-
-        if [[ "$MOUNT_DOCKER_SOCK" == "1" || "$MOUNT_DOCKER_SOCK" == "true" ]]; then
-            printf "  %s\n" "volumes:"
-            printf "    - %s\n" "/var/run/docker.sock:/var/run/docker.sock"
-        else
-            printf "  %s\n" "# To use docker inside jobs, mount host docker.sock (high privilege; use with caution)"
-            printf "  %s\n" "# volumes:"
-            printf "  %s\n" "#   - /var/run/docker.sock:/var/run/docker.sock"
-        fi
-
-        echo
-        echo "services:"
-
-        local i svc vname
-        for i in $(seq 1 "$count"); do
-            svc="${RUNNER_NAME_PREFIX}runner-${i}"
-            vname="${svc}-data"
-            printf "  %s:\n" "$svc"
-            printf "    %s\n" "<<: *runner_base"
-            printf "    %s\n" "container_name: \"$svc\""
-            printf "    %s\n" "command: [\"/home/runner/run.sh\"]"
-            printf "    %s\n" "environment:"
-            printf "      %s\n" "<<: *runner_env"
-            printf "      %s\n" "RUNNER_NAME: \"$svc\""
-            printf "      %s\n" "RUNNER_LABELS: \"${RUNNER_LABELS}\""
-            printf "    %s\n" "volumes:"
-            printf "      - %s\n" "$vname:/home/runner"
-            if [[ "$MOUNT_UDEV_RULES_DIR" == "1" || "$MOUNT_UDEV_RULES_DIR" == "true" ]]; then
-                printf "      - %s\n" "${svc}-udev-rules:/etc/udev/rules.d"
-            fi
-        done
-
-        # Dynamic board instances (BOARD_RUNNERS: board1_name:labels1,label2;board2_name:labels1,label2[;...])
-        if [[ -n "${BOARD_RUNNERS:-}" ]]; then
-            local IFS=';' entry raw name blabels svc vname
-            for entry in ${BOARD_RUNNERS}; do
-                raw="${entry}"; name="${raw%%:*}"; blabels="${raw#*:}"
-                [[ -n "$name" && -n "$blabels" ]] || continue
-                svc="${RUNNER_NAME_PREFIX}runner-${name}"
-                vname="${svc}-data"
-                printf "  %s:\n" "$svc"
-                printf "    %s\n" "<<: *runner_base"
-                printf "    %s\n" "container_name: \"$svc\""
-                printf "    %s\n" "command: [\"/home/runner/run.sh\"]"
-                printf "    %s\n" "environment:"
-                printf "      %s\n" "<<: *runner_env"
-                # For board instances, only use labels provided in BOARD_RUNNERS; do not append base RUNNER_LABELS
-                printf "      %s\n" "RUNNER_LABELS: \"${blabels}\""
-                printf "      %s\n" "RUNNER_NAME: \"$svc\""
-                printf "    %s\n" "volumes:"
-                printf "      - %s\n" "$vname:/home/runner"
-                if [[ "$MOUNT_UDEV_RULES_DIR" == "1" || "$MOUNT_UDEV_RULES_DIR" == "true" ]]; then
-                    printf "      - %s\n" "${svc}-udev-rules:/etc/udev/rules.d"
-                fi
-            done
-        fi
-
-        echo
-        echo "volumes:"
-        # Use a C-style loop to avoid IFS modifications affecting seq output splitting
-        local i
-        for (( i=1; i<=count; i++ )); do
-            printf "  %s\n" "${RUNNER_NAME_PREFIX}runner-${i}-data:"
-            if [[ "$MOUNT_UDEV_RULES_DIR" == "1" || "$MOUNT_UDEV_RULES_DIR" == "true" ]]; then
-                printf "  %s\n" "${RUNNER_NAME_PREFIX}runner-${i}-udev-rules:"
-            fi
-        done
-        # Dynamic board instances (BOARD_RUNNERS: board1_name:labels1,label2;board2_name:labels1,label2[;...])
-        if [[ -n "${BOARD_RUNNERS:-}" ]]; then
-            local IFS=';' entry raw name blabels svc
-            for entry in ${BOARD_RUNNERS}; do
-                raw="${entry}"; name="${raw%%:*}"; blabels="${raw#*:}"
-                [[ -n "$name" && -n "$blabels" ]] || continue
-                printf "  %s\n" "${RUNNER_NAME_PREFIX}runner-${name}-data:"
-                if [[ "$MOUNT_UDEV_RULES_DIR" == "1" || "$MOUNT_UDEV_RULES_DIR" == "true" ]]; then
-                    printf "  %s\n" "${RUNNER_NAME_PREFIX}runner-${name}-udev-rules:"
-                fi
-            done
-        fi
-    } > "$COMPOSE_FILE"
-}
+## Dynamic docker-compose.yml generation has been removed.
 
 # Unified "delete all" executor: count -> prompt -> unregister -> local cleanup
 shell_delete_all_execute() {
@@ -461,7 +288,6 @@ shell_get_reg_token() {
         if [[ -n "$ts" && -n "$cached_token" && "$ts" =~ ^[0-9]+$ ]]; then
             if (( now - ts < REG_TOKEN_CACHE_TTL )); then
                 REG_TOKEN="$cached_token"
-                export REG_TOKEN
                 printf '%s\n' "$REG_TOKEN"
                 return 0
             fi
@@ -470,7 +296,6 @@ shell_get_reg_token() {
 
     if [[ -n "${REG_TOKEN:-}" && "${REG_TOKEN:-}" != "null" ]]; then
         printf '%s\n%s\n' "$now" "$REG_TOKEN" > "$REG_TOKEN_CACHE_FILE"
-        export REG_TOKEN
         printf '%s\n' "$REG_TOKEN"
         return 0
     fi
@@ -483,7 +308,100 @@ shell_get_reg_token() {
     REG_TOKEN="$new_token"
     export REG_TOKEN
     printf '%s\n%s\n' "$now" "$REG_TOKEN" > "$REG_TOKEN_CACHE_FILE"
+    # Keep compose file in sync when fetching a fresh token
     printf '%s\n' "$REG_TOKEN"
+}
+
+# Update a field in docker-compose.yml under environment (mapping or list styles)
+# Usage: shell_update_compose_file KEY VALUE
+shell_update_compose_file() {
+    local key="$1" token="$2"
+    [[ -n "$key" && -n "$token" ]] || return 0
+    local file="$COMPOSE_FILE"
+    [[ -f "$file" ]] || { shell_warn "${file} not found; skip updating ${key}." >&2; return 0; }
+    
+    local tmpfile updated
+    tmpfile=$(mktemp "${file}.tmp.XXXXXX") || return 1
+    updated=0
+    
+    while IFS= read -r line; do
+        # Mapping style: KEY: "value" (preserve indentation and spacing)
+        if [[ "$line" =~ ^[[:space:]]*${key}[[:space:]]*: ]]; then
+            # Extract leading whitespace and preserve it
+            local indent="${line%%[^ ]*}"
+            printf '%s%s: "%s"\n' "$indent" "$key" "$token" >> "$tmpfile"
+            updated=1
+        # List style: - KEY="value" (preserve indentation and dash)
+        elif [[ "$line" =~ ^[[:space:]]*-[[:space:]]*${key}= ]]; then
+            # Extract leading spaces and dash
+            local prefix="${line%${key}*}"
+            printf '%s%s="%s"\n' "$prefix" "$key" "$token" >> "$tmpfile"
+            updated=1
+        else
+            printf '%s\n' "$line" >> "$tmpfile"
+        fi
+    done < "$file"
+    
+    if [[ $updated -eq 1 ]]; then
+        mv "$tmpfile" "$file"
+        shell_info "Updated ${key} in ${file}." >&2
+    else
+        rm -f "$tmpfile"
+        shell_warn "${key} key not found in ${file}; ensure your compose defines it under environment." >&2
+    fi
+}
+
+# Helper: Extract an environment variable value for a specific service from docker-compose.yml
+# Usage: shell_get_compose_file SERVICE_NAME ENV_KEY
+shell_get_compose_file() {
+    local service="$1" key="$2"
+    local file="$COMPOSE_FILE"
+    [[ -f "$file" ]] || return 1
+    
+    local in_service=0 in_env=0 found=0
+    
+    while IFS= read -r line; do
+        # Check if we're entering the target service
+        if [[ "$line" =~ ^[[:space:]]*${service}:[[:space:]]*$ ]]; then
+            in_service=1
+            in_env=0
+            continue
+        fi
+        
+        # If we were in a service and encounter another service at same indentation, exit
+        if [[ $in_service -eq 1 ]] && [[ "$line" =~ ^[a-zA-Z_] ]] && [[ ! "$line" =~ ^[[:space:]] ]]; then
+            break
+        fi
+        
+        # Check if we're entering the environment block
+        if [[ $in_service -eq 1 ]] && [[ "$line" =~ ^[[:space:]]*environment:[[:space:]]*$ ]]; then
+            in_env=1
+            continue
+        fi
+        
+        # If we're in environment section, look for the key
+        if [[ $in_env -eq 1 ]]; then
+            # Stop if we encounter a key at lower indentation level (end of environment)
+            if [[ "$line" =~ ^[a-zA-Z_] ]] || [[ "$line" =~ ^[[:space:]]{0,2}[a-zA-Z_] ]]; then
+                break
+            fi
+            
+            # Match the key in mapping style: KEY: value
+            if [[ "$line" =~ ^[[:space:]]*${key}:[[:space:]]* ]]; then
+                # Extract value after the colon, then trim spaces
+                local value="${line#*:}"
+                value="$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+                # Strip matching surrounding quotes if present (both double and single)
+                if [[ "$value" == \"*\" ]]; then value="${value#\"}"; value="${value%\"}"; fi
+                if [[ "$value" == \'*\' ]]; then value="${value#\'}"; value="${value%\'}"; fi
+                [[ -n "$value" ]] && echo "$value"
+                found=1
+                break
+            fi
+        fi
+    done < "$file"
+    
+    [[ $found -eq 1 ]] && return 0 || return 1
 }
 
 # ------------------------------- GitHub API helpers -------------------------------
@@ -614,7 +532,7 @@ docker_list_existing_containers() {
 
 docker_print_existing_containers_status() {
     if [[ -f "$COMPOSE_FILE" ]]; then
-        docker_compose_ps
+        $DC -f "$COMPOSE_FILE" ps;
         return 0
     fi
 
@@ -647,10 +565,10 @@ docker_remove_all_local_containers_and_volumes() {
     fi
 }
 
+# Usage:
+#   docker_runner_register                -> auto-detect all runner-* containers and register unconfigured ones
+#   docker_runner_register runner-1 ...   -> register runners with the specified names
 docker_runner_register() {
-    # Usage:
-    #   docker_runner_register                -> auto-detect all runner-* containers and register unconfigured ones
-    #   docker_runner_register runner-1 ...   -> register runners with the specified names
     local names=()
     if [[ $# -gt 0 ]]; then
         names=("$@")
@@ -672,26 +590,14 @@ docker_runner_register() {
             shell_info "Already configured, skipping registration: $cname"
             continue
         fi
-        # Compute labels: base RUNNER_LABELS, overridden by BOARD_RUNNERS entry when matching
-        local labels="${RUNNER_LABELS}"
-        if [[ -n "${BOARD_RUNNERS:-}" ]]; then
-            # BOARD_RUNNERS entries are semicolon-separated
-            local IFS=';' entry raw name blabels svcbase
-            svcbase="${cname#"${RUNNER_NAME_PREFIX}"runner-}"
-            for entry in ${BOARD_RUNNERS}; do
-                raw="${entry}"; name="${raw%%:*}"; blabels="${raw#*:}"
-                if [[ "$name" == "$svcbase" ]]; then
-                    # Match board instance: only use the labels from the board entry, overriding base RUNNER_LABELS
-                    labels="${blabels}"
-                fi
-            done
-            # Restore IFS to avoid semicolon-joined expansion in subsequent ${cfg_opts[*]}
-            IFS=$' \t\n'
-        fi
-        # Deduplicate labels
-        labels="$(echo "$labels" | awk -F',' '{n=split($0,a,",");o="";for(i=1;i<=n;i++){gsub(/^[ \t]+|[ \t]+$/,"",a[i]);if(a[i]!=""&&!m[a[i]]++){o=(o?o",":"")a[i]}}print o}')"
+        # Extract RUNNER_LABELS for this specific service from docker-compose.yml
+        local labels
+        labels="$(shell_get_compose_file "$cname" "RUNNER_LABELS")" || labels=""
+        # Sanitize possible surrounding quotes then deduplicate labels
+        labels="$(printf '%s' "$labels" | sed -e 's/^\"\(.*\)\"$/\1/' -e "s/^'\(.*\)'$/\1/" | awk -F',' '{n=split($0,a,",");o="";for(i=1;i<=n;i++){gsub(/^[ \t]+|[ \t]+$/,"",a[i]);if(a[i]!=""&&!m[a[i]]++){o=(o?o",":"")a[i]}}print o}')"
+        
         local cfg_opts=(
-            "--url" "https://github.com/${ORG}"
+            "--url" "https://github.com/${ORG}${REPO:+/}${REPO}"
             "--token" "${REG_TOKEN}"
             "--name" "${cname}"
             "--labels" "${labels}"
@@ -701,7 +607,8 @@ docker_runner_register() {
         [[ -n "${RUNNER_WORKDIR}" ]] && cfg_opts+=("--work" "${RUNNER_WORKDIR}")
         [[ "${DISABLE_AUTO_UPDATE}" == "1" ]] && cfg_opts+=("--disableupdate")
         shell_info "Registering on GitHub: ${cname}"
-        $DC -f "$COMPOSE_FILE" run --rm --no-deps "$cname" bash -lc "/home/runner/config.sh ${cfg_opts[*]}" >/dev/null || shell_warn "Registration failed (container: $cname)"
+        # Pass arguments directly to avoid shell quoting issues
+        $DC -f "$COMPOSE_FILE" run --rm --no-deps "$cname" /home/runner/config.sh "${cfg_opts[@]}" >/dev/null || shell_warn "Registration failed (container: $cname)"
     done
 }
 
@@ -738,34 +645,28 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             echo
             ;;
 
-        # ./runner.sh init [-n|--count N]
+        # ./runner.sh init
         init)
-            count="$RUNNER_COUNT"
-            if [[ "${1:-}" == "-n" || "${1:-}" == "--count" ]]; then
-                shift
-                count="${1:-$RUNNER_COUNT}"
-                shift || true
-            fi
-            [[ "$count" =~ ^[0-9]+$ ]] || shell_die "Count must be numeric!"
-            # Compute number of board-specific runners
-            board_count="$(shell_count_board_runners)"
-            generic_count=$(( count - board_count ))
-            (( generic_count > 0 )) || shell_die "(total - board_count) resulting generic instance count must be > 0!"
+            [[ -f "$COMPOSE_FILE" ]] || shell_die "${COMPOSE_FILE} not found. Please create docker-compose.yml first."
 
-            RUNNER_IMAGE="$(shell_prepare_runner_image)"
+            RUNNER_IMAGE="$(shell_prepare_runner_image)";
+            shell_update_compose_file "image" "$RUNNER_IMAGE"
+
             REG_TOKEN="$(shell_get_reg_token)"
-            # Subtract board-specific count only when rendering compose (board instances are appended separately)
-            shell_render_compose_file "$generic_count"
+            shell_update_compose_file "RUNNER_TOKEN" "$REG_TOKEN"
+            
+            $DC -f "$COMPOSE_FILE" up -d "$@";
 
-            # Only start/register generic instances here (board instances were added separately in the compose file)
-            docker_compose_up
             docker_runner_register
             ;;
 
         # ./runner.sh register [${RUNNER_NAME_PREFIX}runner-<id> ...]
         register)
-            RUNNER_IMAGE="$(shell_prepare_runner_image)"
+            [[ -f "$COMPOSE_FILE" ]] || shell_die "${COMPOSE_FILE} not found. Please create docker-compose.yml first."
+
             REG_TOKEN="$(shell_get_reg_token)"
+            shell_update_compose_file "RUNNER_TOKEN" "$REG_TOKEN"
+
             if [[ $# -ge 1 ]]; then
                 # Pass incoming parameters (container names or numbers) directly to docker_runner_register
                 # Allow multiple parameters at once
@@ -777,8 +678,11 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
         # ./runner.sh start [${RUNNER_NAME_PREFIX}runner-<id> ...]
         start)
-            RUNNER_IMAGE="$(shell_prepare_runner_image)"
+            [[ -f "$COMPOSE_FILE" ]] || shell_die "${COMPOSE_FILE} not found. Please create docker-compose.yml first."
+
             REG_TOKEN="$(shell_get_reg_token)"
+            shell_update_compose_file "RUNNER_TOKEN" "$REG_TOKEN"
+
             if [[ $# -ge 1 ]]; then
                 ids=(); max_id=0
                 for s in "$@"; do
@@ -793,10 +697,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     shell_info "No Runner containers to stop!"
                     exit 0
                 fi
-                exist_max="$(docker_highest_existing_index)"
-                count="$exist_max"; (( max_id > count )) && count="$max_id"
-                (( count >= 1 )) || count=1
-                shell_render_compose_file "$count"
                 docker_compose_up "${ids[@]}"
             else
                 mapfile -t names < <(docker_list_existing_containers) || names=()
@@ -810,16 +710,17 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     ids+=("$cname")
                     n="${cname##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
                 done
-                (( max_id >= 1 )) || max_id=1
-                shell_render_compose_file "$max_id"
-                docker_compose_up "${ids[@]}"
+                $DC -f "$COMPOSE_FILE" up "${ids[@]}"
             fi
             ;;
 
         # ./runner.sh stop [${RUNNER_NAME_PREFIX}runner-<id> ...]
         stop)
-            RUNNER_IMAGE="$(shell_prepare_runner_image)"
+            [[ -f "$COMPOSE_FILE" ]] || shell_die "${COMPOSE_FILE} not found. Please create docker-compose.yml first."
+
             REG_TOKEN="$(shell_get_reg_token)"
+            shell_update_compose_file "RUNNER_TOKEN" "$REG_TOKEN"
+
             if [[ $# -ge 1 ]]; then
                 ids=(); max_id=0
                 for s in "$@"; do
@@ -834,11 +735,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     shell_info "No Runner containers to stop!"
                     exit 0
                 fi
-                exist_max="$(docker_highest_existing_index)"
-                count="$exist_max"; (( max_id > count )) && count="$max_id"
-                (( count >= 1 )) || count=1
-                shell_render_compose_file "$count"
-                docker_compose_stop "${ids[@]}"
+                $DC -f "$COMPOSE_FILE" stop "${ids[@]}";
             else
                 mapfile -t names < <(docker_list_existing_containers) || names=()
                 if [[ ${#names[@]} -eq 0 ]]; then
@@ -851,16 +748,17 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     ids+=("$cname")
                     n="${cname##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
                 done
-                (( max_id >= 1 )) || max_id=1
-                shell_render_compose_file "$max_id"
-                docker_compose_stop "${ids[@]}"
+                $DC -f "$COMPOSE_FILE" stop "${ids[@]}";
             fi
             ;;
 
         # ./runner.sh restart [${RUNNER_NAME_PREFIX}runner-<id> ...]
         restart)
-            RUNNER_IMAGE="$(shell_prepare_runner_image)"
+            [[ -f "$COMPOSE_FILE" ]] || shell_die "${COMPOSE_FILE} not found. Please create docker-compose.yml first."
+
             REG_TOKEN="$(shell_get_reg_token)"
+            shell_update_compose_file "RUNNER_TOKEN" "$REG_TOKEN"
+
             ids=(); max_id=0
             if [[ $# -ge 1 ]]; then
                 for s in "$@"; do
@@ -887,8 +785,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     n="${cname##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
                 done
             fi
-            (( max_id >= 1 )) || max_id=1
-            shell_render_compose_file "$max_id"
             docker_compose_restart "${ids[@]}"
             ;;
 
@@ -896,17 +792,13 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         logs)
             [[ $# -eq 1 ]] || shell_die "Usage: ./runner.sh logs ${RUNNER_NAME_PREFIX}runner-<id>"
             [[ "$1" =~ ^${RUNNER_NAME_PREFIX}runner-([0-9]+)$ ]] || shell_die "Invalid service name: $1"
-            id="${BASH_REMATCH[1]}"
-            exist_max="$(docker_highest_existing_index)"
-            count="$exist_max"; (( id > count )) && count="$id"
-            (( count >= 1 )) || count=1
-            shell_render_compose_file "$count"
+            [[ -f "$COMPOSE_FILE" ]] || shell_die "${COMPOSE_FILE} not found. Please create docker-compose.yml first."
             docker_compose_logs "$1"
             ;;
 
         # ./runner.sh rm|remove|delete [${RUNNER_NAME_PREFIX}runner-<id> ...] [-y|--yes]
         rm|remove|delete)
-            REG_TOKEN="$(shell_get_reg_token)"
+            shell_get_org_and_pat
             if [[ "$#" -eq 0 || "$1" == "-y" || "$1" == "--yes" ]]; then
                 if [[ "$#" -ge 1 ]]; then
                     shell_delete_all_execute ""
@@ -935,7 +827,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     else
                         shell_warn "Not found in organization list: $name; it may have been removed already!"
                     fi
-                    # Related volume names: <container>-data and optionally <container>-udev-rules
+                    Related volume names: <container>-data and optionally <container>-udev-rules
                     vol_list="${name}-data"
                     if [[ "$MOUNT_UDEV_RULES_DIR" == "1" || "$MOUNT_UDEV_RULES_DIR" == "true" ]]; then
                         vol_list+=" / ${name}-udev-rules"
@@ -956,7 +848,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             else
                 shell_delete_all_execute "Confirm unregister of all Runners, delete all containers and volumes, and remove all generated files? [y / N] " || { echo "Operation cancelled!"; exit 0; }
             fi
-            for f in "$COMPOSE_FILE" \
+            for f in \
                 "${REG_TOKEN_CACHE_FILE}" \
                 "${DOCKERFILE_HASH_FILE}" \
                 "$ENV_FILE"; do
