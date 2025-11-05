@@ -19,23 +19,13 @@ REG_TOKEN_CACHE_TTL="${REG_TOKEN_CACHE_TTL:-300}" # seconds, default 5 minutes
 # Runner container related parameters
 RUNNER_IMAGE="${RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}"
 RUNNER_CUSTOM_IMAGE="${RUNNER_CUSTOM_IMAGE:-qc-actions-runner:v0.0.1}"
+RUNNER_NAME_PREFIX="${RUNNER_NAME_PREFIX:-$(hostname)}-"
+RUNNER_GROUP="${RUNNER_GROUP:-Default}"
+RUNNER_WORKDIR="${RUNNER_WORKDIR:-}"
+DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
 ## Removed: dynamic compose generation and board overrides; compose must exist
 COMPOSE_FILE="docker-compose.yml"
 DOCKERFILE_HASH_FILE="${DOCKERFILE_HASH_FILE:-.dockerfile.sha256}"
-RUNNER_LABELS="${RUNNER_LABELS:-intel}"
-RUNNER_GROUP="${RUNNER_GROUP:-Default}"
-RUNNER_NAME_PREFIX="${RUNNER_NAME_PREFIX:-$(hostname)}-"
-RUNNER_WORKDIR="${RUNNER_WORKDIR:-}"
-DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
-
-# Internal container privileges and device mapping settings
-PRIVILEGED="${PRIVILEGED:-true}"
-MAP_LOOP_DEVICES="${MAP_LOOP_DEVICES:-true}"
-LOOP_DEVICE_COUNT="${LOOP_DEVICE_COUNT:-4}"
-MAP_KVM_DEVICE="${MAP_KVM_DEVICE:-true}"
-MAP_USB_DEVICE="${MAP_USB_DEVICE:-true}"
-MOUNT_UDEV_RULES_DIR="${MOUNT_UDEV_RULES_DIR:-true}"
-MOUNT_DOCKER_SOCK="${MOUNT_DOCKER_SOCK:-}"
 
 # ------------------------------- Helpers -------------------------------
 shell_usage() {
@@ -72,24 +62,12 @@ shell_usage() {
 
   echo "Environment variables (from .env or interactive input):"
   local KEYW=24
-  printf "  %-${KEYW}s %s\n" "ORG" "Organization name (required)"
   printf "  %-${KEYW}s %s\n" "GH_PAT" "Classic PAT (requires admin:org), used for org API and registration token"
-  printf "  %-${KEYW}s %s\n" "RUNNER_LABELS" "Example: self-hosted,linux,docker"
-  printf "  %-${KEYW}s %s\n" "RUNNER_GROUP" "Runner group (optional)"
-  printf "  %-${KEYW}s %s\n" "RUNNER_NAME_PREFIX" "Runner name prefix"
-  printf "  %-${KEYW}s %s\n" "DISABLE_AUTO_UPDATE" '"1" disables Runner auto-update'
-  printf "  %-${KEYW}s %s\n" "RUNNER_WORKDIR" "Work directory (default /runner/_work)"
-  printf "  %-${KEYW}s %s\n" "MOUNT_DOCKER_SOCK" '"true"/"1" mounts /var/run/docker.sock (high privilege, use with caution)'
+  printf "  %-${KEYW}s %s\n" "ORG" "Organization name or user name (required)"
   printf "  %-${KEYW}s %s\n" "REPO" "Optional repository name (when set, operate on repo-scoped runners under ORG/REPO instead of organization-wide runners)"
+  printf "  %-${KEYW}s %s\n" "RUNNER_NAME_PREFIX" "Runner name prefix"
   printf "  %-${KEYW}s %s\n" "RUNNER_IMAGE" "Image used for compose generation (default ghcr.io/actions/actions-runner:latest)"
   printf "  %-${KEYW}s %s\n" "RUNNER_CUSTOM_IMAGE" "Image tag used for auto-build (can override)"
-  printf "  %-${KEYW}s %s\n" "PRIVILEGED" "Run as privileged (default true, recommended to solve loop device issues)"
-  printf "  %-${KEYW}s %s\n" "MAP_LOOP_DEVICES" "Map host /dev/loop* to container (default true)"
-  printf "  %-${KEYW}s %s\n" "LOOP_DEVICE_COUNT" "Max loop devices to map (default 4)"
-  printf "  %-${KEYW}s %s\n" "MAP_KVM_DEVICE" "Map /dev/kvm to container (default true if present)"
-  printf "  %-${KEYW}s %s\n" "MAP_USB_DEVICE" "Map /dev/ttyUSB* to container (default true if present)"
-  printf "  %-${KEYW}s %s\n" "MOUNT_UDEV_RULES_DIR" "Mount /etc/udev/rules.d to ensure the directory exists (default true)"
-
   echo
   echo "Example workflow runs-on: runs-on: [self-hosted, linux, docker]"
 
@@ -482,32 +460,6 @@ docker_pick_compose() {
     fi
 }
 
-DC=$(docker_pick_compose)
-
-docker_compose_up() {
-    $DC -f "$COMPOSE_FILE" up -d "$@";
-}
-
-docker_compose_stop() {
-    $DC -f "$COMPOSE_FILE" stop "$@";
-}
-
-docker_compose_restart() {
-    $DC -f "$COMPOSE_FILE" restart "$@";
-}
-
-docker_compose_logs() {
-    $DC -f "$COMPOSE_FILE" logs -f "$@";
-}
-
-docker_compose_ps() {
-    $DC -f "$COMPOSE_FILE" ps;
-}
-
-docker_compose_create() {
-    $DC -f "$COMPOSE_FILE" create "$@";
-}
-
 # Highest existing index among services named "<prefix>runner-<n>" from compose
 docker_highest_existing_index() {
     local prefix="${RUNNER_NAME_PREFIX}runner-"
@@ -526,7 +478,6 @@ docker_highest_existing_index() {
 }
 
 docker_list_existing_containers() {
-    [[ -f "$COMPOSE_FILE" ]] || { echo ""; return 0; }
     $DC -f "$COMPOSE_FILE" ps --services --all | grep -F "${RUNNER_NAME_PREFIX}runner-" || true
 }
 
@@ -552,7 +503,6 @@ docker_print_existing_containers_status() {
 # Check whether a specific container exists (local docker ps -a name match)
 docker_container_exists() {
     local name="$1"
-    [[ -f "$COMPOSE_FILE" ]] || return 1
     $DC -f "$COMPOSE_FILE" ps --services --all | grep -qx "$name" >/dev/null 2>&1
 }
 
@@ -613,6 +563,7 @@ docker_runner_register() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    DC=$(docker_pick_compose)
     CMD="${1:-help}"; shift || true
     case "$CMD" in
         # ./runner.sh help|-h|--help
@@ -633,7 +584,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             echo
 
             echo "--------------------------------- Runners --------------------------------------------"
-            resp=$(github_api GET "/actions/runners?per_page=100") || shell_die "Failed to fetch organization runner list."
+            resp=$(github_api GET "/actions/runners?per_page=100") || shell_die "Failed to fetch runner list."
             if command -v jq >/dev/null 2>&1; then
                 echo "$resp" | jq -r '.runners[] | [.name, .status, (if .busy then "busy" else "idle" end), ( [.labels[].name] | join(","))] | @tsv' \
                     | awk -F'\t' 'BEGIN{printf("%-40s %-8s %-6s %s\n","NAME","STATUS","BUSY","LABELS")}{printf("%-40s %-8s %-6s %s\n",$1,$2,$3,$4)}'
@@ -641,7 +592,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 echo "$resp"
             fi
             echo
-            shell_info "Due to GitHub limitations, organization runner list is limited to 100 entries!"
+            shell_info "Due to GitHub limitations, runner list is limited to 100 entries!"
             echo
             ;;
 
@@ -697,7 +648,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     shell_info "No Runner containers to stop!"
                     exit 0
                 fi
-                docker_compose_up "${ids[@]}"
+                $DC -f "$COMPOSE_FILE" up -d "${ids[@]}"
             else
                 mapfile -t names < <(docker_list_existing_containers) || names=()
                 if [[ ${#names[@]} -eq 0 ]]; then
@@ -785,7 +736,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     n="${cname##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
                 done
             fi
-            docker_compose_restart "${ids[@]}"
+            $DC -f "$COMPOSE_FILE" restart "${ids[@]}"
             ;;
 
         # ./runner.sh logs ${RUNNER_NAME_PREFIX}runner-<id>
@@ -793,7 +744,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             [[ $# -eq 1 ]] || shell_die "Usage: ./runner.sh logs ${RUNNER_NAME_PREFIX}runner-<id>"
             [[ "$1" =~ ^${RUNNER_NAME_PREFIX}runner-([0-9]+)$ ]] || shell_die "Invalid service name: $1"
             [[ -f "$COMPOSE_FILE" ]] || shell_die "${COMPOSE_FILE} not found. Please create docker-compose.yml first."
-            docker_compose_logs "$1"
+            $DC -f "$COMPOSE_FILE" logs -f "$1"
             ;;
 
         # ./runner.sh rm|remove|delete [${RUNNER_NAME_PREFIX}runner-<id> ...] [-y|--yes]
