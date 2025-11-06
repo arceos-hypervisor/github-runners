@@ -3,7 +3,7 @@ x-dtlqc-runner-base: &runner_base
   restart: unless-stopped
   environment: &runner_env
     RUNNER_ORG_URL: "https://github.com/arceos-hypervisor"
-    RUNNER_TOKEN: "ACBRNWMNTJJMJ2NAKZIL6SDJBLPQQ"
+    RUNNER_TOKEN: "ACBRNWOHY7N2U7WUXGNRMEDJBRFR2"
     RUNNER_GROUP: "Default"
     RUNNER_REMOVE_ON_STOP: "false"
     DISABLE_AUTO_UPDATE: "false"
@@ -41,7 +41,16 @@ services:
   dtlqc-runner-phytiumpi:
     <<: *runner_base
     container_name: "dtlqc-runner-phytiumpi"
-    command: ["/home/runner/run.sh"]
+    command:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        mkdir -p /home/runner/test
+        cd /home/runner/test
+        wget -q https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.15/phytiumpi_linux.tar.gz
+        tar -xzf phytiumpi_linux.tar.gz
+        exec /home/runner/run.sh
     devices:
       - /dev/loop-control:/dev/loop-control
       - /dev/loop0:/dev/loop0
@@ -58,6 +67,12 @@ services:
       <<: *runner_env
       RUNNER_NAME: "dtlqc-runner-phytiumpi"
       RUNNER_LABELS: "phytiumpi"
+      BOARD_POWER_ON: "mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1"
+      BOARD_POWER_OFF: "mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0"
+      BOARD_DTB: "/home/runner/test/phytiumpi_firefly.dtb"
+      BOARD_COMM_UART_DEV: "/dev/ttyUSB2"
+      BOARD_COMM_UART_BAUD: "1152000"
+      BOARD_COMM_NET_IFACE: "eth0"
     volumes:
       - dtlqc-runner-phytiumpi-data:/home/runner
       - dtlqc-runner-phytiumpi-udev-rules:/etc/udev/rules.d
@@ -66,7 +81,16 @@ services:
   dtlqc-runner-roc-rk3568-pc:
     <<: *runner_base
     container_name: "dtlqc-runner-roc-rk3568-pc"
-    command: ["/home/runner/run.sh"]
+    command:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        mkdir -p /home/runner/test
+        cd /home/runner/test
+        wget -q https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.15/roc-rk3568-pc_linux.tar.gz
+        tar -xzf roc-rk3568-pc_linux.tar.gz
+        exec /home/runner/run.sh
     devices:
       - /dev/loop-control:/dev/loop-control
       - /dev/loop0:/dev/loop0
@@ -83,6 +107,12 @@ services:
       <<: *runner_env
       RUNNER_NAME: "dtlqc-runner-roc-rk3568-pc"
       RUNNER_LABELS: "roc-rk3568-pc"
+      BOARD_POWER_ON: "mbpoll -m rtu -a 1 -r 6 -t 0 -b 1152000 -P none -v /dev/ttyUSB0 1"
+      BOARD_POWER_OFF: "mbpoll -m rtu -a 1 -r 6 -t 0 -b 1152000 -P none -v /dev/ttyUSB0 0"
+      BOARD_DTB: "/home/runner/test/rk3568-firefly-roc-pc-se.dtb"
+      BOARD_COMM_UART_DEV: "/dev/ttyUSB2"
+      BOARD_COMM_UART_BAUD: "1152000"
+      BOARD_COMM_NET_IFACE: "eth0"
     volumes:
       - dtlqc-runner-roc-rk3568-pc-data:/home/runner
       - dtlqc-runner-roc-rk3568-pc-udev-rules:/etc/udev/rules.d

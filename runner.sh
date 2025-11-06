@@ -250,8 +250,10 @@ shell_delete_all_execute() {
         fi
     fi
 
-    github_delete_all_runners_with_prefix || true
-    docker_remove_all_local_containers_and_volumes || true
+    # 根据计数条件执行相应的删除操作
+    [[ "$org_count" -gt 0 ]] && { shell_info "Deleting ${org_count} GitHub runners..."; github_delete_all_runners_with_prefix || true; }
+    [[ "$cont_count" -gt 0 ]] && { shell_info "Deleting ${cont_count} Docker containers and volumes..."; docker_remove_all_local_containers_and_volumes || true; }
+
     shell_info "Batch deletion complete!"
 }
 
@@ -458,23 +460,6 @@ docker_pick_compose() {
     else
         shell_die "docker compose (v2) or docker-compose is not installed."
     fi
-}
-
-# Highest existing index among services named "<prefix>runner-<n>" from compose
-docker_highest_existing_index() {
-    local prefix="${RUNNER_NAME_PREFIX}runner-"
-    if [[ ! -f "$COMPOSE_FILE" ]]; then echo 0; return 0; fi
-    $DC -f "$COMPOSE_FILE" ps --services --all 2>/dev/null \
-        | awk -v p="$prefix" '
-            index($0, p) == 1 {
-            n = substr($0, length(p) + 1)
-            if (n ~ /^[0-9]+$/) {
-                val = n + 0
-                if (val > max) max = val
-            }
-            }
-            END { if (max == "") print 0; else print max }
-        ' || echo 0
 }
 
 docker_list_existing_containers() {
