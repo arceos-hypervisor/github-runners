@@ -588,23 +588,22 @@ docker_pick_compose() {
 }
 
 docker_list_existing_containers() {
-    docker ps -a --filter "name=${RUNNER_NAME_PREFIX}runner-" --format "{{.Names}}" || true
+    if [[ -f "$COMPOSE_FILE" ]]; then
+        $DC -f "$COMPOSE_FILE" ps --services --all | grep -F "${RUNNER_NAME_PREFIX}runner-" || true
+    else
+        docker ps -a --filter "name=${RUNNER_NAME_PREFIX}runner-" --format "{{.Names}}" || true
+    fi
 }
 
 docker_print_existing_containers_status() {
     if [[ -f "$COMPOSE_FILE" ]]; then
-        $DC -f "$COMPOSE_FILE" ps;
+        $DC -f "$COMPOSE_FILE" ps
         return 0
     fi
 
     # Fallback: query via docker when compose file is absent
     if command -v docker >/dev/null 2>&1; then
-        local out
-        out="$(docker ps -a --format '{{.Names}}\t{{.State}}\t{{.Status}}' 2>/dev/null || true)"
-        printf "%-40s %-10s %s\n" "NAME" "STATE" "STATUS"
-        if [[ -n "$out" ]]; then
-            awk -v p="^${RUNNER_NAME_PREFIX}runner-[0-9]+$" -F '\t' 'NF>=3 { if ($1 ~ p) printf("%-40s %-10s %s\n", $1, $2, $3) }' <<< "$out"
-        fi
+        docker ps -a --filter "name=${RUNNER_NAME_PREFIX}runner-" --format "table {{.Names}}\t{{.State}}\t{{.Status}}"
     else
         shell_info "${COMPOSE_FILE} not found and docker command not detected; cannot query status."
     fi
@@ -613,7 +612,11 @@ docker_print_existing_containers_status() {
 # Check whether a specific container exists (local docker ps -a name match)
 docker_container_exists() {
     local name="$1"
-    $DC -f "$COMPOSE_FILE" ps --services --all | grep -qx "$name" >/dev/null 2>&1
+    if [[ -f "$COMPOSE_FILE" ]]; then
+        $DC -f "$COMPOSE_FILE" ps --services --all | grep -qx "$name" >/dev/null 2>&1
+    else
+        docker ps -a --format '{{.Names}}' | grep -qx "$name" >/dev/null 2>&1
+    fi
 }
 
 docker_remove_all_local_containers_and_volumes() {
@@ -621,7 +624,19 @@ docker_remove_all_local_containers_and_volumes() {
         shell_info "Using docker compose down -v to remove all services and volumes"
         $DC -f "$COMPOSE_FILE" down -v >/dev/null 2>&1 || true
     else
-        shell_warn "${COMPOSE_FILE} not found; skipping compose down -v."
+        shell_info "Removing containers and volumes with docker commands"
+        # Remove containers
+        local containers
+        containers=$(docker ps -a --filter "name=${RUNNER_NAME_PREFIX}runner-" --format "{{.Names}}" 2>/dev/null || true)
+        if [[ -n "$containers" ]]; then
+            echo "$containers" | xargs -r docker rm -f >/dev/null 2>&1 || true
+        fi
+        # Remove volumes
+        local volumes
+        volumes=$(docker volume ls --filter "name=${RUNNER_NAME_PREFIX}runner-" --format "{{.Name}}" 2>/dev/null || true)
+        if [[ -n "$volumes" ]]; then
+            echo "$volumes" | xargs -r docker volume rm >/dev/null 2>&1 || true
+        fi
     fi
 }
 
@@ -703,7 +718,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
         # ./runner.sh init -n|--count N
         init)
-            # [[ -f "$COMPOSE_FILE" ]] || shell_die "${COMPOSE_FILE} not found. Please create docker-compose.yml first."
             count=0
             if [[ "${1:-}" == "-n" || "${1:-}" == "--count" ]]; then
                 shift
@@ -715,10 +729,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             shell_info "Generating $COMPOSE_FILE with $count generic runners and ${#BOARD_CONFIGS[@]} board-specific runners."
 
             RUNNER_IMAGE="$(shell_prepare_runner_image)";
-            # shell_update_compose_file "image" "$RUNNER_IMAGE"
 
             REG_TOKEN="$(shell_get_reg_token)"
-            # shell_update_compose_file "RUNNER_TOKEN" "$REG_TOKEN"
 
             shell_generate_compose_file "$count"
 
@@ -757,125 +769,102 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
         # ./runner.sh start [${RUNNER_NAME_PREFIX}runner-<id> ...]
         start)
-            [[ -f "$COMPOSE_FILE" ]] || shell_die "${COMPOSE_FILE} not found. Please create docker-compose.yml first."
-
-            REG_TOKEN="$(shell_get_reg_token)"
-            shell_update_compose_file "RUNNER_TOKEN" "$REG_TOKEN"
-
             if [[ $# -ge 1 ]]; then
-                ids=(); max_id=0
+                ids=()
                 for s in "$@"; do
                     if ! docker_container_exists "$s"; then
                         shell_warn "No Runner container found for $s, ignoring this argument!"
                         continue
                     fi
                     ids+=("$s")
-                    n="${s##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
                 done
                 if [[ ${#ids[@]} -eq 0 ]]; then
-                    shell_info "No Runner containers to stop!"
+                    shell_info "No Runner containers to start!"
                     exit 0
                 fi
+            else
+                mapfile -t ids < <(docker_list_existing_containers) || ids=()
+                if [[ ${#ids[@]} -eq 0 ]]; then
+                    shell_info "No Runner containers to start!"
+                    exit 0
+                fi
+            fi
+            if [[ -f "$COMPOSE_FILE" ]]; then
                 $DC -f "$COMPOSE_FILE" up -d "${ids[@]}"
             else
-                mapfile -t names < <(docker_list_existing_containers) || names=()
-                if [[ ${#names[@]} -eq 0 ]]; then
-                    shell_info "No Runner containers to stop!"
-                    exit 0
-                fi
-                ids=(); max_id=0
-                for cname in "${names[@]}"; do
-                    [[ -n "$cname" ]] || continue
-                    ids+=("$cname")
-                    n="${cname##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
-                done
-                $DC -f "$COMPOSE_FILE" up "${ids[@]}"
+                docker start "${ids[@]}"
             fi
             ;;
 
         # ./runner.sh stop [${RUNNER_NAME_PREFIX}runner-<id> ...]
         stop)
-            [[ -f "$COMPOSE_FILE" ]] || shell_die "${COMPOSE_FILE} not found. Please create docker-compose.yml first."
-
-            REG_TOKEN="$(shell_get_reg_token)"
-            shell_update_compose_file "RUNNER_TOKEN" "$REG_TOKEN"
-
             if [[ $# -ge 1 ]]; then
-                ids=(); max_id=0
+                ids=()
                 for s in "$@"; do
                     if ! docker_container_exists "$s"; then
                         shell_warn "No Runner container found for $s, ignoring this argument!"
                         continue
                     fi
                     ids+=("$s")
-                    n="${s##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
                 done
                 if [[ ${#ids[@]} -eq 0 ]]; then
                     shell_info "No Runner containers to stop!"
                     exit 0
                 fi
-                $DC -f "$COMPOSE_FILE" stop "${ids[@]}";
             else
-                mapfile -t names < <(docker_list_existing_containers) || names=()
-                if [[ ${#names[@]} -eq 0 ]]; then
+                mapfile -t ids < <(docker_list_existing_containers) || ids=()
+                if [[ ${#ids[@]} -eq 0 ]]; then
                     shell_info "No Runner containers to stop!"
                     exit 0
                 fi
-                ids=(); max_id=0
-                for cname in "${names[@]}"; do
-                    [[ -n "$cname" ]] || continue
-                    ids+=("$cname")
-                    n="${cname##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
-                done
-                $DC -f "$COMPOSE_FILE" stop "${ids[@]}";
+            fi
+            if [[ -f "$COMPOSE_FILE" ]]; then
+                $DC -f "$COMPOSE_FILE" stop "${ids[@]}"
+            else
+                docker stop "${ids[@]}"
             fi
             ;;
 
         # ./runner.sh restart [${RUNNER_NAME_PREFIX}runner-<id> ...]
         restart)
-            [[ -f "$COMPOSE_FILE" ]] || shell_die "${COMPOSE_FILE} not found. Please create docker-compose.yml first."
-
-            REG_TOKEN="$(shell_get_reg_token)"
-            shell_update_compose_file "RUNNER_TOKEN" "$REG_TOKEN"
-
-            ids=(); max_id=0
             if [[ $# -ge 1 ]]; then
+                ids=()
                 for s in "$@"; do
                     if ! docker_container_exists "$s"; then
                         shell_warn "No Runner container found for $s, ignoring this argument!"
                         continue
                     fi
                     ids+=("$s")
-                    n="${s##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
                 done
                 if [[ ${#ids[@]} -eq 0 ]]; then
                     shell_info "No Runner containers to restart!"
                     exit 0
                 fi
             else
-                mapfile -t names < <(docker_list_existing_containers) || names=()
-                if [[ ${#names[@]} -eq 0 ]]; then
+                mapfile -t ids < <(docker_list_existing_containers) || ids=()
+                if [[ ${#ids[@]} -eq 0 ]]; then
                     shell_info "No Runner containers to restart!"
                     exit 0
                 fi
-                for cname in "${names[@]}"; do
-                    [[ -n "$cname" ]] || continue
-                    ids+=("$cname")
-                    n="${cname##*-}"; [[ "$n" =~ ^[0-9]+$ ]] && (( n > max_id )) && max_id="$n"
-                done
             fi
-            $DC -f "$COMPOSE_FILE" restart "${ids[@]}"
+            if [[ -f "$COMPOSE_FILE" ]]; then
+                $DC -f "$COMPOSE_FILE" restart "${ids[@]}"
+            else
+                docker restart "${ids[@]}"
+            fi
             ;;
 
         # ./runner.sh logs ${RUNNER_NAME_PREFIX}runner-<id>
         logs)
             [[ $# -eq 1 ]] || shell_die "Usage: ./runner.sh logs ${RUNNER_NAME_PREFIX}runner-<id>"
 
-            [[ "$1" =~ ^${RUNNER_NAME_PREFIX}runner-([0-9]+)$ ]] || shell_die "Invalid service name: $1"
+            docker_container_exists "$1" || shell_die "Container $1 not found"
 
-            [[ -f "$COMPOSE_FILE" ]] || shell_die "${COMPOSE_FILE} not found. Please create docker-compose.yml first."
-
-            $DC -f "$COMPOSE_FILE" logs -f "$0"
+            if [[ -f "$COMPOSE_FILE" ]]; then
+                $DC -f "$COMPOSE_FILE" logs -f "$1"
+            else
+                docker logs -f "$1"
+            fi
             ;;
 
         # ./runner.sh rm|remove|delete [${RUNNER_NAME_PREFIX}runner-<id> ...] [-y|--yes]
