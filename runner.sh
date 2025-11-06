@@ -654,20 +654,39 @@ docker_runner_register() {
         shell_info "No Runner containers to register!"
         return 0
     fi
-    [[ -f "$COMPOSE_FILE" ]] || shell_die "Missing ${COMPOSE_FILE}; cannot register using compose."
+    
     local cname
     for cname in "${names[@]}"; do
         if ! docker_container_exists "$cname"; then
-            shell_warn "Container not defined in compose or does not exist: $cname (skipping)"
+            shell_warn "Container does not exist: $cname (skipping)"
             continue
         fi
-        if $DC -f "$COMPOSE_FILE" run --rm --no-deps "$cname" bash -lc 'test -f /home/runner/.runner && test -f /home/runner/.credentials' >/dev/null 2>&1; then
+        
+        # Check if already configured
+        local is_configured=false
+        if [[ -f "$COMPOSE_FILE" ]]; then
+            if $DC -f "$COMPOSE_FILE" run --rm --no-deps "$cname" bash -lc 'test -f /home/runner/.runner && test -f /home/runner/.credentials' >/dev/null 2>&1; then
+                is_configured=true
+            fi
+        else
+            if docker exec "$cname" bash -c 'test -f /home/runner/.runner && test -f /home/runner/.credentials' >/dev/null 2>&1; then
+                is_configured=true
+            fi
+        fi
+        
+        if $is_configured; then
             shell_info "Already configured, skipping registration: $cname"
             continue
         fi
-        # Extract RUNNER_LABELS for this specific service from docker-compose.yml
-        local labels
-        labels="$(shell_get_compose_file "$cname" "RUNNER_LABELS")" || labels=""
+        
+        # Extract RUNNER_LABELS
+        local labels=""
+        if [[ -f "$COMPOSE_FILE" ]]; then
+            labels="$(shell_get_compose_file "$cname" "RUNNER_LABELS")" || labels=""
+        else
+            # Fallback: try to get from running container environment
+            labels="$(docker inspect "$cname" --format='{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | grep '^RUNNER_LABELS=' | cut -d= -f2-)" || labels=""
+        fi
         # Sanitize possible surrounding quotes then deduplicate labels
         labels="$(printf '%s' "$labels" | sed -e 's/^\"\(.*\)\"$/\1/' -e "s/^'\(.*\)'$/\1/" | awk -F',' '{n=split($0,a,",");o="";for(i=1;i<=n;i++){gsub(/^[ \t]+|[ \t]+$/,"",a[i]);if(a[i]!=""&&!m[a[i]]++){o=(o?o",":"")a[i]}}print o}')"
         
@@ -681,9 +700,14 @@ docker_runner_register() {
         )
         [[ -n "${RUNNER_WORKDIR}" ]] && cfg_opts+=("--work" "${RUNNER_WORKDIR}")
         [[ "${DISABLE_AUTO_UPDATE}" == "1" ]] && cfg_opts+=("--disableupdate")
-        shell_info "Registering on GitHub: ${cname}"
+        
+        shell_info "Registering ${cname} on GitHub with ${cfg_opts[@]}"
         # Pass arguments directly to avoid shell quoting issues
-        $DC -f "$COMPOSE_FILE" run --rm --no-deps "$cname" /home/runner/config.sh "${cfg_opts[@]}" >/dev/null || shell_warn "Registration failed (container: $cname)"
+        if [[ -f "$COMPOSE_FILE" ]]; then
+            $DC -f "$COMPOSE_FILE" run --rm --no-deps "$cname" /home/runner/config.sh "${cfg_opts[@]}" >/dev/null || shell_warn "Registration failed (container: $cname)"
+        else
+            docker exec "$cname" /home/runner/config.sh "${cfg_opts[@]}" >/dev/null || shell_warn "Registration failed (container: $cname)"
+        fi
     done
 }
 
@@ -707,6 +731,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             resp=$(github_api GET "/actions/runners?per_page=100") || shell_die "Failed to fetch runner list."
             if command -v jq >/dev/null 2>&1; then
                 echo "$resp" | jq -r '.runners[] | [.name, .status, (if .busy then "busy" else "idle" end), ( [.labels[].name] | join(","))] | @tsv' \
+                    | grep -E "^${RUNNER_NAME_PREFIX}runner-" \
                     | awk -F'\t' 'BEGIN{printf("%-40s %-8s %-6s %s\n","NAME","STATUS","BUSY","LABELS")}{printf("%-40s %-8s %-6s %s\n",$1,$2,$3,$4)}'
             else
                 echo "$resp"
@@ -753,8 +778,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
         # ./runner.sh register [${RUNNER_NAME_PREFIX}runner-<id> ...]
         register)
-            [[ -f "$COMPOSE_FILE" ]] || shell_die "${COMPOSE_FILE} not found. Please create docker-compose.yml first."
-
             REG_TOKEN="$(shell_get_reg_token)"
             shell_update_compose_file "RUNNER_TOKEN" "$REG_TOKEN"
 
