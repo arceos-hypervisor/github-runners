@@ -22,10 +22,22 @@ RUNNER_CUSTOM_IMAGE="${RUNNER_CUSTOM_IMAGE:-qc-actions-runner:v0.0.1}"
 RUNNER_NAME_PREFIX="${RUNNER_NAME_PREFIX:-$(hostname)}-"
 RUNNER_GROUP="${RUNNER_GROUP:-Default}"
 RUNNER_WORKDIR="${RUNNER_WORKDIR:-}"
+RUNNER_LABELS="${RUNNER_LABELS:-intel}"
 DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
 ## Removed: dynamic compose generation and board overrides; compose must exist
 COMPOSE_FILE="docker-compose.yml"
 DOCKERFILE_HASH_FILE="${DOCKERFILE_HASH_FILE:-.dockerfile.sha256}"
+## boards
+declare -A BOARD_CONFIGS=(
+    ["phytiumpi"]="phytiumpi|\
+                    phytiumpi_linux.tar.gz|\
+                    mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1|\
+                    mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0|\
+                    /home/runner/test/phytiumpi_firefly.dtb|\
+                    /dev/ttyUSB2|\
+                    1152000"
+    ["roc-rk3568-pc"]="roc-rk3568-pc|roc-rk3568-pc_linux.tar.gz|mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1|mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0|/home/runner/test/rk3568-firefly-roc-pc-se.dtb|/dev/ttyUSB2|1500000"
+)
 
 # ------------------------------- Helpers -------------------------------
 shell_usage() {
@@ -34,9 +46,9 @@ shell_usage() {
   echo
 
   echo "1. Creation commands:"
-  printf "  %-${COLW}s %s\n" "./runner.sh init" "Start services defined in docker-compose.yml (compose file must exist)"
-  printf "  %-${COLW}s %s\n" "" "First run will request a registration token from the organization and export it for compose"
-  echo 
+  printf "  %-${COLW}s %s\n" "./runner.sh init -n N" "Generate docker-compose.yml then create runners and start"
+  printf "  %-${COLW}s %s\n" "./runner.sh compose" "Regenerate docker-compose.yml with existing generic and board-specific runners"
+  echo
 
   echo "2. Instance operation commands:"
   printf "  %-${COLW}s %s\n" "./runner.sh register [${RUNNER_NAME_PREFIX}runner-<id> ...]" "Register specified instances; no args will iterate over all existing instances"
@@ -47,8 +59,7 @@ shell_usage() {
   echo
 
   echo "3. Query commands:"
-  printf "  %-${COLW}s %s\n" "./runner.sh ps" "Show status of related containers"
-  printf "  %-${COLW}s %s\n" "./runner.sh list|status" "Show container status and registered Runner status"
+  printf "  %-${COLW}s %s\n" "./runner.sh ps|ls|list|status" "Show container status and registered Runner status"
   echo
 
   echo "4. Deletion commands:"
@@ -75,7 +86,6 @@ shell_usage() {
   echo "Tips:"
   echo "- docker-compose.yml must exist. The script will not generate or modify it."
   echo "- Re-start/up will reuse existing volumes; Runner configuration and tool caches will not be lost."
-    # Board-specific label overrides removed; specify labels in your compose file per service.
 }
 
 shell_die() { echo "[ERROR] $*" >&2; exit 1; }
@@ -222,8 +232,6 @@ shell_prepare_runner_image() {
         return 0
     fi
 }
-
-## Dynamic docker-compose.yml generation has been removed.
 
 # Unified "delete all" executor: count -> prompt -> unregister -> local cleanup
 shell_delete_all_execute() {
@@ -384,6 +392,123 @@ shell_get_compose_file() {
     [[ $found -eq 1 ]] && return 0 || return 1
 }
 
+shell_generate_compose_file() {
+    local general_count=$1
+    
+    # 使用 printf 输出文件头
+    printf '%s\n' \
+        "# 自动生成的 Docker Compose 配置" \
+        "# 机器名: $RUNNER_NAME_PREFIX" \
+        "# 普通 runner 数量: $general_count" \
+        "# 板子 runner 数量: ${#BOARD_CONFIGS[@]}" \
+        "" \
+        "# 基础配置" \
+        "x-${RUNNER_NAME_PREFIX}runner-base: &runner_base" \
+        "  image: \"${RUNNER_IMAGE}\"" \
+        "  restart: unless-stopped" \
+        "  environment: &runner_env" \
+        "    RUNNER_ORG_URL: \"https://github.com/arceos-hypervisor\"" \
+        "    RUNNER_TOKEN: \"${REG_TOKEN}\"" \
+        "    RUNNER_GROUP: \"${RUNNER_GROUP}\"" \
+        "    RUNNER_REMOVE_ON_STOP: \"false\"" \
+        "    DISABLE_AUTO_UPDATE: \"${DISABLE_AUTO_UPDATE}\"" \
+        "    RUNNER_WORKDIR: \"${RUNNER_WORKDIR}\"" \
+        "    HTTP_PROXY: \"http://127.0.0.1:7890\"" \
+        "    HTTPS_PROXY: \"http://127.0.0.1:7890\"" \
+        "    NO_PROXY: localhost,127.0.0.1,.internal" \
+        "  network_mode: host" \
+        "  privileged: true" \
+        "" \
+        "services:" > docker-compose.yml
+
+    # 生成普通 runners
+    echo "  # 普通 runners" >> docker-compose.yml
+    for i in $(seq 1 $general_count); do
+        printf '%s\n' \
+            "  ${RUNNER_NAME_PREFIX}runner-${i}:" \
+            "    <<: *runner_base" \
+            "    container_name: \"${RUNNER_NAME_PREFIX}runner-${i}\"" \
+            "    command: [\"/home/runner/run.sh\"]" \
+            "    devices:" \
+            "      - /dev/loop-control:/dev/loop-control" \
+            "      - /dev/loop0:/dev/loop0" \
+            "      - /dev/loop1:/dev/loop1" \
+            "      - /dev/loop2:/dev/loop2" \
+            "      - /dev/loop3:/dev/loop3" \
+            "      - /dev/kvm:/dev/kvm" \
+            "    group_add:" \
+            "      - kvm" \
+            "    environment:" \
+            "      <<: *runner_env" \
+            "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-${i}\"" \
+            "      RUNNER_LABELS: \"${RUNNER_LABELS}\"" \
+            "    volumes:" \
+            "      - ${RUNNER_NAME_PREFIX}runner-${i}-data:/home/runner" \
+            "      - ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules:/etc/udev/rules.d" \
+            "" >> docker-compose.yml
+    done
+
+    # 生成板子 runners
+    echo "  # 板子专用 runners" >> docker-compose.yml
+    for board_name in "${!BOARD_CONFIGS[@]}"; do
+        IFS='|' read -r labels download_file power_on power_off dtb_path uart_dev baud_rate <<< "$(echo "${BOARD_CONFIGS[$board_name]}" | sed -E 's/\\[[:space:]]*//g' | tr -d '\n' | sed -E 's/[[:space:]]*\|[[:space:]]*/|/g; s/^[[:space:]]+//; s/[[:space:]]+$//')"
+        
+        printf '%s\n' \
+            "  ${RUNNER_NAME_PREFIX}runner-${board_name}:" \
+            "    <<: *runner_base" \
+            "    container_name: \"${RUNNER_NAME_PREFIX}runner-${board_name}\"" \
+            "    command:" \
+            "      - /bin/bash" \
+            "      - -c" \
+            "      - |" \
+            "        set -e" \
+            "        mkdir -p /home/runner/test" \
+            "        cd /home/runner/test" \
+            "        wget -q https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.15/${download_file}" \
+            "        tar -xzf ${download_file}" \
+            "        exec /home/runner/run.sh" \
+            "    devices:" \
+            "      - /dev/loop-control:/dev/loop-control" \
+            "      - /dev/loop0:/dev/loop0" \
+            "      - /dev/loop1:/dev/loop1" \
+            "      - /dev/loop2:/dev/loop2" \
+            "      - /dev/loop3:/dev/loop3" \
+            "      - /dev/kvm:/dev/kvm" \
+            "      - /dev/ttyUSB0:/dev/ttyUSB0" \
+            "      - /dev/ttyUSB1:/dev/ttyUSB1" \
+            "    group_add:" \
+            "      - kvm" \
+            "      - dialout" \
+            "    environment:" \
+            "      <<: *runner_env" \
+            "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-${board_name}\"" \
+            "      RUNNER_LABELS: \"${labels}\"" \
+            "      BOARD_POWER_ON: \"${power_on}\"" \
+            "      BOARD_POWER_OFF: \"${power_off}\"" \
+            "      BOARD_DTB: \"${dtb_path}\"" \
+            "      BOARD_COMM_UART_DEV: \"${uart_dev}\"" \
+            "      BOARD_COMM_UART_BAUD: \"${baud_rate}\"" \
+            "      BOARD_COMM_NET_IFACE: \"eth0\"" \
+            "    volumes:" \
+            "      - ${RUNNER_NAME_PREFIX}runner-${board_name}-data:/home/runner" \
+            "      - ${RUNNER_NAME_PREFIX}runner-${board_name}-udev-rules:/etc/udev/rules.d" \
+            "" >> docker-compose.yml
+    done
+
+    # 生成 volumes
+    echo "volumes:" >> docker-compose.yml
+    
+    for i in $(seq 1 $general_count); do
+        echo "  ${RUNNER_NAME_PREFIX}runner-${i}-data:" >> docker-compose.yml
+        echo "  ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules:" >> docker-compose.yml
+    done
+    
+    for board_name in "${!BOARD_CONFIGS[@]}"; do
+        echo "  ${RUNNER_NAME_PREFIX}runner-${board_name}-data:" >> docker-compose.yml
+        echo "  ${RUNNER_NAME_PREFIX}runner-${board_name}-udev-rules:" >> docker-compose.yml
+    done
+}
+
 # ------------------------------- GitHub API helpers -------------------------------
 github_api() {
     local method="$1" path="$2" body="${3:-}"
@@ -463,7 +588,7 @@ docker_pick_compose() {
 }
 
 docker_list_existing_containers() {
-    $DC -f "$COMPOSE_FILE" ps --services --all | grep -F "${RUNNER_NAME_PREFIX}runner-" || true
+    docker ps -a --filter "name=${RUNNER_NAME_PREFIX}runner-" --format "{{.Names}}" || true
 }
 
 docker_print_existing_containers_status() {
@@ -556,13 +681,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             shell_usage
             ;;
 
-        # ./runner.sh ps
-        ps)
-            docker_print_existing_containers_status
-            ;;
-
-        # ./runner.sh list|status
-        list|status)
+        # ./runner.sh ps|ls|list|status
+        ps|ls|list|status)
             shell_get_org_and_pat
             echo "--------------------------------- Containers -----------------------------------------"
             docker_print_existing_containers_status
@@ -581,19 +701,42 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             echo
             ;;
 
-        # ./runner.sh init
+        # ./runner.sh init -n|--count N
         init)
-            [[ -f "$COMPOSE_FILE" ]] || shell_die "${COMPOSE_FILE} not found. Please create docker-compose.yml first."
+            # [[ -f "$COMPOSE_FILE" ]] || shell_die "${COMPOSE_FILE} not found. Please create docker-compose.yml first."
+            count=0
+            if [[ "${1:-}" == "-n" || "${1:-}" == "--count" ]]; then
+                shift
+                count="${1:-0}"
+                shift || true
+            fi
+            [[ "$count" =~ ^[0-9]+$ ]] || shell_die "Count must be numeric!"
+
+            shell_info "Generating $COMPOSE_FILE with $count generic runners and ${#BOARD_CONFIGS[@]} board-specific runners."
 
             RUNNER_IMAGE="$(shell_prepare_runner_image)";
-            shell_update_compose_file "image" "$RUNNER_IMAGE"
+            # shell_update_compose_file "image" "$RUNNER_IMAGE"
 
             REG_TOKEN="$(shell_get_reg_token)"
-            shell_update_compose_file "RUNNER_TOKEN" "$REG_TOKEN"
-            
+            # shell_update_compose_file "RUNNER_TOKEN" "$REG_TOKEN"
+
+            shell_generate_compose_file "$count"
+
             $DC -f "$COMPOSE_FILE" up -d "$@";
 
             docker_runner_register
+            ;;
+        
+        # ./runner.sh compose
+        compose)
+            cont_count=0
+            cont_list="$(docker_list_existing_containers)"
+            if [[ -n "$cont_list" ]]; then cont_count=$(echo "$cont_list" | wc -l | tr -d ' '); fi
+            generic_count=$(( cont_count - ${#BOARD_CONFIGS[@]} ))
+            shell_info "Regenerating $COMPOSE_FILE with ${generic_count} existing runners and ${#BOARD_CONFIGS[@]} board-specific runners."
+            RUNNER_IMAGE="$(shell_prepare_runner_image)";
+            REG_TOKEN="$(shell_get_reg_token)"
+            shell_generate_compose_file "$generic_count"
             ;;
 
         # ./runner.sh register [${RUNNER_NAME_PREFIX}runner-<id> ...]
@@ -727,9 +870,12 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         # ./runner.sh logs ${RUNNER_NAME_PREFIX}runner-<id>
         logs)
             [[ $# -eq 1 ]] || shell_die "Usage: ./runner.sh logs ${RUNNER_NAME_PREFIX}runner-<id>"
+
             [[ "$1" =~ ^${RUNNER_NAME_PREFIX}runner-([0-9]+)$ ]] || shell_die "Invalid service name: $1"
+
             [[ -f "$COMPOSE_FILE" ]] || shell_die "${COMPOSE_FILE} not found. Please create docker-compose.yml first."
-            $DC -f "$COMPOSE_FILE" logs -f "$1"
+
+            $DC -f "$COMPOSE_FILE" logs -f "$0"
             ;;
 
         # ./runner.sh rm|remove|delete [${RUNNER_NAME_PREFIX}runner-<id> ...] [-y|--yes]
