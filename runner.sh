@@ -597,7 +597,7 @@ docker_list_existing_containers() {
 
 docker_print_existing_containers_status() {
     if [[ -f "$COMPOSE_FILE" ]]; then
-        $DC -f "$COMPOSE_FILE" ps
+        $DC -f "$COMPOSE_FILE" ps -a
         return 0
     fi
 
@@ -789,6 +789,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     exit 0
                 fi
             fi
+            shell_info "Starting ${#ids[@]} container(s): ${ids[*]}"
             if [[ -f "$COMPOSE_FILE" ]]; then
                 $DC -f "$COMPOSE_FILE" up -d "${ids[@]}"
             else
@@ -818,6 +819,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     exit 0
                 fi
             fi
+            shell_info "Stopping ${#ids[@]} container(s): ${ids[*]}"
             if [[ -f "$COMPOSE_FILE" ]]; then
                 $DC -f "$COMPOSE_FILE" stop "${ids[@]}"
             else
@@ -847,6 +849,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     exit 0
                 fi
             fi
+            shell_info "Restarting ${#ids[@]} container(s): ${ids[*]}"
             if [[ -f "$COMPOSE_FILE" ]]; then
                 $DC -f "$COMPOSE_FILE" restart "${ids[@]}"
             else
@@ -860,6 +863,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
             docker_container_exists "$1" || shell_die "Container $1 not found"
 
+            shell_info "Showing logs for: $1"
             if [[ -f "$COMPOSE_FILE" ]]; then
                 $DC -f "$COMPOSE_FILE" logs -f "$1"
             else
