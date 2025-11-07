@@ -483,8 +483,9 @@ shell_generate_compose_file() {
             "      <<: *runner_env" \
             "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-${board_name}\"" \
             "      RUNNER_LABELS: \"${labels}\"" \
-            "      BOARD_POWER_ON: \"${power_on}\"" \
-            "      BOARD_POWER_OFF: \"${power_off}\"" \
+            "      BOARD_POWER_ON: \"echo 'Power ON...' && ${power_on}\"" \
+            "      BOARD_POWER_OFF: \"echo 'Power OFF...' && ${power_off}\"" \
+            "      BOARD_POWER_RESET: \"echo 'Power OFF...' && ${power_off} && echo 'Waiting 2 seconds...' && sleep 2 && echo 'Power ON...' && ${power_on}\"" \
             "      BOARD_DTB: \"${dtb_path}\"" \
             "      BOARD_COMM_UART_DEV: \"${uart_dev}\"" \
             "      BOARD_COMM_UART_BAUD: \"${baud_rate}\"" \
