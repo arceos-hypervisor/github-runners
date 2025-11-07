@@ -35,7 +35,7 @@ declare -A BOARD_CONFIGS=(
                     mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0|\
                     /home/runner/test/phytiumpi_firefly.dtb|\
                     /dev/ttyUSB2|\
-                    1152000"
+                    115200"
     ["roc-rk3568-pc"]="roc-rk3568-pc|roc-rk3568-pc_linux.tar.gz|mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1|mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0|/home/runner/test/rk3568-firefly-roc-pc-se.dtb|/dev/ttyUSB2|1500000"
 )
 

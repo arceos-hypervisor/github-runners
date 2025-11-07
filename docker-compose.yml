@@ -118,7 +118,7 @@ services:
       BOARD_POWER_RESET: "echo 'Power ON...' && mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1 && echo 'Waiting 2 seconds...' && sleep 2 && echo 'Power OFF...' && mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0"
       BOARD_DTB: "/home/runner/test/phytiumpi_firefly.dtb"
       BOARD_COMM_UART_DEV: "/dev/ttyUSB2"
-      BOARD_COMM_UART_BAUD: "1152000"
+      BOARD_COMM_UART_BAUD: "115200"
       BOARD_COMM_NET_IFACE: "eth0"
     volumes:
       - dtlqc-runner-phytiumpi-data:/home/runner
