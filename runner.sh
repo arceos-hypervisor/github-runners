@@ -55,7 +55,7 @@ shell_usage() {
   printf "  %-${COLW}s %s\n" "./runner.sh start [${RUNNER_NAME_PREFIX}runner-<id> ...]" "Start specified instances (will register if needed); no args will iterate all existing instances"
   printf "  %-${COLW}s %s\n" "./runner.sh stop [${RUNNER_NAME_PREFIX}runner-<id> ...]" "Stop Runner containers; no args will iterate all existing instances"
   printf "  %-${COLW}s %s\n" "./runner.sh restart [${RUNNER_NAME_PREFIX}runner-<id> ...]" "Restart specified instances; no args will iterate all existing instances"
-  printf "  %-${COLW}s %s\n" "./runner.sh logs ${RUNNER_NAME_PREFIX}runner-<id>" "Follow logs of a specified instance"
+  printf "  %-${COLW}s %s\n" "./runner.sh log ${RUNNER_NAME_PREFIX}runner-<id>" "Follow logs of a specified instance"
   echo
 
   echo "3. Query commands:"
@@ -881,8 +881,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             fi
             ;;
 
-        # ./runner.sh logs ${RUNNER_NAME_PREFIX}runner-<id>
-        logs)
+        # ./runner.sh log ${RUNNER_NAME_PREFIX}runner-<id>
+        log)
             [[ $# -eq 1 ]] || shell_die "Usage: ./runner.sh logs ${RUNNER_NAME_PREFIX}runner-<id>"
 
             docker_container_exists "$1" || shell_die "Container $1 not found"
