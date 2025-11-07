@@ -500,13 +500,19 @@ shell_generate_compose_file() {
     echo "volumes:" >> docker-compose.yml
     
     for i in $(seq 1 $general_count); do
-        echo "  ${RUNNER_NAME_PREFIX}runner-${i}-data:" >> docker-compose.yml
-        echo "  ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules:" >> docker-compose.yml
+        printf '%s\n' \
+            "  ${RUNNER_NAME_PREFIX}runner-${i}-data:" \
+            "    name: ${RUNNER_NAME_PREFIX}runner-${i}-data" \
+            "  ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules:" \
+            "    name: ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules" >> docker-compose.yml
     done
     
     for board_name in "${!BOARD_CONFIGS[@]}"; do
-        echo "  ${RUNNER_NAME_PREFIX}runner-${board_name}-data:" >> docker-compose.yml
-        echo "  ${RUNNER_NAME_PREFIX}runner-${board_name}-udev-rules:" >> docker-compose.yml
+        printf '%s\n' \
+            "  ${RUNNER_NAME_PREFIX}runner-${board_name}-data:" \
+            "    name: ${RUNNER_NAME_PREFIX}runner-${board_name}-data" \
+            "  ${RUNNER_NAME_PREFIX}runner-${board_name}-udev-rules:" \
+            "    name: ${RUNNER_NAME_PREFIX}runner-${board_name}-udev-rules" >> docker-compose.yml
     done
 }
 
@@ -926,15 +932,19 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     else
                         shell_warn "Not found in organization list: $name; it may have been removed already!"
                     fi
-                    Related volume names: <container>-data and optionally <container>-udev-rules
-                    vol_list="${name}-data"
-                    if [[ "$MOUNT_UDEV_RULES_DIR" == "1" || "$MOUNT_UDEV_RULES_DIR" == "true" ]]; then
-                        vol_list+=" / ${name}-udev-rules"
-                    fi
-                    shell_info "Removing container and data volumes: $name / ${vol_list}"
+                    
+                    shell_info "Removing container: $name"
                     if [[ -f "$COMPOSE_FILE" ]]; then
-                        $DC -f "$COMPOSE_FILE" rm -s -f "$name" >/dev/null 2>&1 || true
+                        # Stop and remove specific container using compose
+                        $DC -f "$COMPOSE_FILE" rm -s -f -v "$name" >/dev/null 2>&1 || true
+                    else
+                        # Stop and remove container using docker
+                        docker rm -f "$name" >/dev/null 2>&1 || true
+                        # Remove associated volumes
+                        docker volume rm "${name}-data" >/dev/null 2>&1 || true
+                        docker volume rm "${name}-udev-rules" >/dev/null 2>&1 || true
                     fi
+                    shell_info "Removed: $name"
                 done
             fi
             ;;
