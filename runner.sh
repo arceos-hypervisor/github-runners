@@ -752,11 +752,11 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             fi
             [[ "$count" =~ ^[0-9]+$ ]] || shell_die "Count must be numeric!"
 
-            shell_info "Generating $COMPOSE_FILE with $count generic runners and ${#BOARD_CONFIGS[@]} board-specific runners."
+            REG_TOKEN="$(shell_get_reg_token)"
 
             RUNNER_IMAGE="$(shell_prepare_runner_image)";
 
-            REG_TOKEN="$(shell_get_reg_token)"
+            shell_info "Generating $COMPOSE_FILE with $count generic runners and ${#BOARD_CONFIGS[@]} board-specific runners."
 
             shell_generate_compose_file "$count"
 
