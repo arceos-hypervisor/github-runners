@@ -489,7 +489,6 @@ shell_generate_compose_file() {
             "      BOARD_DTB: \"${dtb_path}\"" \
             "      BOARD_COMM_UART_DEV: \"${uart_dev}\"" \
             "      BOARD_COMM_UART_BAUD: \"${baud_rate}\"" \
-            "      BOARD_COMM_NET_IFACE: \"eth0\"" \
             "    volumes:" \
             "      - ${RUNNER_NAME_PREFIX}runner-${board_name}-data:/home/runner" \
             "      - ${RUNNER_NAME_PREFIX}runner-${board_name}-udev-rules:/etc/udev/rules.d" \
