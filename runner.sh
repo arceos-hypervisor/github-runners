@@ -27,14 +27,14 @@ DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
 ## Removed: dynamic compose generation and board overrides; compose must exist
 COMPOSE_FILE="docker-compose.yml"
 DOCKERFILE_HASH_FILE="${DOCKERFILE_HASH_FILE:-.dockerfile.sha256}"
-## boards
+## boards: labels download_file power_on power_off dtb_path uart_dev baud_rate
 declare -A BOARD_CONFIGS=(
     ["phytiumpi"]="phytiumpi|\
                     phytiumpi_linux.tar.gz|\
                     mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1|\
                     mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0|\
                     /home/runner/test/phytiumpi_firefly.dtb|\
-                    /dev/ttyUSB2|\
+                    /dev/ttyUSB1|\
                     115200"
     ["roc-rk3568-pc"]="roc-rk3568-pc|roc-rk3568-pc_linux.tar.gz|mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1|mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0|/home/runner/test/rk3568-firefly-roc-pc-se.dtb|/dev/ttyUSB2|1500000"
 )
