@@ -33,10 +33,10 @@ declare -A BOARD_CONFIGS=(
                     phytiumpi_linux.tar.gz|\
                     mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1|\
                     mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0|\
-                    /home/runner/test/phytiumpi_firefly.dtb|\
+                    /home/runner/test/phytiumpi.dtb|\
                     /dev/ttyUSB1|\
                     115200"
-    ["roc-rk3568-pc"]="roc-rk3568-pc|roc-rk3568-pc_linux.tar.gz|mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1|mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0|/home/runner/test/rk3568-firefly-roc-pc-se.dtb|/dev/ttyUSB2|1500000"
+    ["roc-rk3568-pc"]="roc-rk3568-pc|roc-rk3568-pc_linux.tar.gz|mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1|mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0|/home/runner/test/roc-rk3568-pc.dtb|/dev/ttyUSB2|1500000"
 )
 
 # ------------------------------- Helpers -------------------------------
@@ -464,7 +464,7 @@ shell_generate_compose_file() {
             "        set -e" \
             "        mkdir -p /home/runner/test" \
             "        cd /home/runner/test" \
-            "        wget -q https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.15/${download_file}" \
+            "        wget -q https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.18/${download_file}" \
             "        tar -xzf ${download_file}" \
             "        exec /home/runner/run.sh" \
             "    devices:" \
