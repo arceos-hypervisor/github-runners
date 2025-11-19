@@ -67,7 +67,11 @@ shell_usage() {
   printf "  %-${COLW}s %s\n" "./runner.sh purge [-y]" "On top of remove, also delete the dynamically generated docker-compose.yml"
   echo
 
-  echo "5. Help"
+  echo "5. Image management commands:"
+  printf "  %-${COLW}s %s\n" "./runner.sh image" "Rebuild Docker image based on Dockerfile"
+  echo
+
+  echo "6. Help"
   printf "  %-${COLW}s %s\n" "./runner.sh help" "Show this help"
   echo
 
@@ -966,6 +970,41 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 fi
             done
             shell_info "purge complete!"
+            ;;
+
+        # ./runner.sh image
+        image)
+            if [[ ! -f Dockerfile ]]; then
+                shell_die "Dockerfile not found in current directory!"
+            fi
+            
+            shell_info "Rebuilding Docker image based on Dockerfile..."
+            
+            # Force rebuild by removing hash file if it exists
+            if [[ -f "$DOCKERFILE_HASH_FILE" ]]; then
+                rm -f "$DOCKERFILE_HASH_FILE"
+                shell_info "Removed existing Dockerfile hash to force rebuild"
+            fi
+            
+            # Build the image
+            if docker build -t "${RUNNER_CUSTOM_IMAGE}" .; then
+                shell_info "Successfully built ${RUNNER_CUSTOM_IMAGE} image"
+                
+                # Update hash file
+                local new_hash=""
+                if command -v sha256sum >/dev/null 2>&1; then
+                    new_hash=$(sha256sum Dockerfile | awk '{print $1}')
+                elif command -v shasum >/dev/null 2>&1; then
+                    new_hash=$(shasum -a 256 Dockerfile | awk '{print $1}')
+                fi
+                
+                if [[ -n "$new_hash" ]]; then
+                    echo "$new_hash" > "$DOCKERFILE_HASH_FILE"
+                    shell_info "Updated Dockerfile hash"
+                fi
+            else
+                shell_die "Failed to build Docker image!"
+            fi
             ;;
 
         # ./runner.sh

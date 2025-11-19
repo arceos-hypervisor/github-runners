@@ -7,23 +7,16 @@ USER root
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install QEMU and common build tools
+# Install common build tools and dependencies
 # - build-essential: gcc, g++, make, libc dev headers
-# - qemu-system: system emulators
-# - qemu-user, qemu-user-static: user-mode emulators for cross-arch binaries
-# - qemu-utils: qemu-img, etc
 # - binfmt-support: helpers for binfmt_misc (host typically manages handlers)
-# - pkg-config, git, ca-certificates: common utilities
+# - Additional dependencies for building QEMU from source
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        build-essential \
        pkg-config \
        git \
        ca-certificates \
-       qemu-system \
-       qemu-user \
-       qemu-user-static \
-       qemu-utils \
        binfmt-support \
        dosfstools \
        python3-venv \
@@ -47,12 +40,38 @@ RUN apt-get update \
        cpio \
        gzip \
        debootstrap \
-       binfmt-support \
        debian-archive-keyring \
        eatmydata \
        file \
        rsync \
+       # Additional dependencies for QEMU compilation
+       libglib2.0-dev \
+       libfdt-dev \
+       libpixman-1-dev \
+       zlib1g-dev \
+       libnfs-dev \
+       libiscsi-dev \
+       python3-dev \
+       python3-pip \
+       python3-tomli \
+       python3-sphinx \
+       ninja-build \
     && rm -rf /var/lib/apt/lists/*
+
+# Build and install QEMU 10.1.2 from source 
+RUN mkdir -p /tmp/qemu-build \
+    && cd /tmp/qemu-build \
+    && wget https://download.qemu.org/qemu-10.1.2.tar.xz \
+    && tar -xf qemu-10.1.2.tar.xz \
+    && cd qemu-10.1.2 \
+    && ./configure \
+        --enable-kvm \
+        --disable-docs \
+        --enable-virtfs \
+    && make -j$(nproc) \
+    && make install \
+    && cd / \
+    && rm -rf /tmp/qemu-build
 
 # 串口访问只能是 root 和 dialout 组，这里直把 runner 用户加入 dialout 组
 RUN usermod -aG dialout runner
