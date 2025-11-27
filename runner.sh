@@ -441,7 +441,7 @@ shell_generate_compose_file() {
             "      - /dev/loop3:/dev/loop3" \
             "      - /dev/kvm:/dev/kvm" \
             "    group_add:" \
-            "      - kvm" \
+            "      - 993" \
             "    environment:" \
             "      <<: *runner_env" \
             "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-${i}\"" \
@@ -481,7 +481,7 @@ shell_generate_compose_file() {
             "      - /dev/ttyUSB0:/dev/ttyUSB0" \
             "      - /dev/ttyUSB1:/dev/ttyUSB1" \
             "    group_add:" \
-            "      - kvm" \
+            "      - 993" \
             "      - dialout" \
             "    environment:" \
             "      <<: *runner_env" \
