@@ -23,6 +23,7 @@ RUNNER_NAME_PREFIX="${RUNNER_NAME_PREFIX:-$(hostname)}-"
 RUNNER_GROUP="${RUNNER_GROUP:-Default}"
 RUNNER_WORKDIR="${RUNNER_WORKDIR:-}"
 RUNNER_LABELS="${RUNNER_LABELS:-intel}"
+RUNNER_BOARD="2"
 DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
 COMPOSE_FILE="docker-compose.yml"
 DOCKERFILE_HASH_FILE="${DOCKERFILE_HASH_FILE:-.dockerfile.sha256}"
@@ -392,7 +393,7 @@ shell_generate_compose_file() {
         "# 自动生成的 Docker Compose 配置" \
         "# 机器名: $(hostname)" \
         "# 普通 runner 数量: $general_count" \
-        "# 板子 runner 数量: 2" \
+        "# 板子 runner 数量: ${RUNNER_BOARD}" \
         "" \
         "# 基础配置" \
         "x-${RUNNER_NAME_PREFIX}runner-base: &runner_base" \
@@ -440,97 +441,100 @@ shell_generate_compose_file() {
             "" >> docker-compose.yml
     done
 
-    # 生成板子 runners
-    echo "  # 板子专用 runners" >> docker-compose.yml
-    
-    # phytiumpi 板子配置
-    printf '%s\n' \
-        "  ${RUNNER_NAME_PREFIX}runner-phytiumpi:" \
-        "    <<: *runner_base" \
-        "    container_name: \"${RUNNER_NAME_PREFIX}runner-phytiumpi\"" \
-        "    command:" \
-        "      - /bin/bash" \
-        "      - -c" \
-        "      - |" \
-        "        set -e" \
-        "        mkdir -p /home/runner/test" \
-        "        cd /home/runner/test" \
-        "        wget -q https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.18/phytiumpi_linux.tar.gz" \
-        "        tar -xzf phytiumpi_linux.tar.gz" \
-        "        exec /home/runner/run.sh" \
-        "    devices:" \
-        "      - /dev/loop-control:/dev/loop-control" \
-        "      - /dev/loop0:/dev/loop0" \
-        "      - /dev/loop1:/dev/loop1" \
-        "      - /dev/loop2:/dev/loop2" \
-        "      - /dev/loop3:/dev/loop3" \
-        "      - /dev/kvm:/dev/kvm" \
-        "      - /dev/ttyUSB0:/dev/ttyUSB0" \
-        "      - /dev/ttyUSB1:/dev/ttyUSB1" \
-        "    group_add:" \
-        "      - 993" \
-        "      - dialout" \
-        "    environment:" \
-        "      <<: *runner_env" \
-        "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-phytiumpi\"" \
-        "      RUNNER_LABELS: \"phytiumpi\"" \
-        "      BOARD_POWER_ON: \"mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1\"" \
-        "      BOARD_POWER_OFF: \"mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0\"" \
-        "      BOARD_POWER_RESET: \"mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0 && sleep 2 && mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1\"" \
-        "      BOARD_DTB: \"/home/runner/test/phytiumpi.dtb\"" \
-        "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB1\"" \
-        "      BOARD_COMM_UART_BAUD: \"115200\"" \
-        "      BOARD_COMM_NET_IFACE: \"eth0\"" \
-        "      TFTP_SERVER: \"1\"" \
-        "      TFTP_DIR: \"phytiumpi\"" \
-        "      BIN_DIR: \"/home/runner/test/phytiumpi\"" \
-        "    volumes:" \
-        "      - /home/$(whoami)/test/phytiumpi:/home/runner/test/phytiumpi" \
-        "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-data:/home/runner" \
-        "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules:/etc/udev/rules.d" \
-        "" >> docker-compose.yml
-    
-    # roc-rk3568-pc 板子配置
-    printf '%s\n' \
-        "  ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc:" \
-        "    <<: *runner_base" \
-        "    container_name: \"${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc\"" \
-        "    command:" \
-        "      - /bin/bash" \
-        "      - -c" \
-        "      - |" \
-        "        set -e" \
-        "        mkdir -p /home/runner/test" \
-        "        cd /home/runner/test" \
-        "        wget -q https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.18/roc-rk3568-pc_linux.tar.gz" \
-        "        tar -xzf roc-rk3568-pc_linux.tar.gz" \
-        "        exec /home/runner/run.sh" \
-        "    devices:" \
-        "      - /dev/loop-control:/dev/loop-control" \
-        "      - /dev/loop0:/dev/loop0" \
-        "      - /dev/loop1:/dev/loop1" \
-        "      - /dev/loop2:/dev/loop2" \
-        "      - /dev/loop3:/dev/loop3" \
-        "      - /dev/kvm:/dev/kvm" \
-        "      - /dev/ttyUSB0:/dev/ttyUSB0" \
-        "      - /dev/ttyUSB1:/dev/ttyUSB1" \
-        "    group_add:" \
-        "      - 993" \
-        "      - dialout" \
-        "    environment:" \
-        "      <<: *runner_env" \
-        "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc\"" \
-        "      RUNNER_LABELS: \"roc-rk3568-pc\"" \
-        "      BOARD_POWER_ON: \"mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1\"" \
-        "      BOARD_POWER_OFF: \"mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0\"" \
-        "      BOARD_POWER_RESET: \"mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0 && sleep 2 && mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1\"" \
-        "      BOARD_DTB: \"/home/runner/test/roc-rk3568-pc.dtb\"" \
-        "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB2\"" \
-        "      BOARD_COMM_UART_BAUD: \"1500000\"" \
-        "    volumes:" \
-        "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data:/home/runner" \
-        "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:/etc/udev/rules.d" \
-        "" >> docker-compose.yml
+    # 只有当 RUNNER_BOARD 大于 0 时才生成板子 runners
+    if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
+        # 生成板子 runners
+        echo "  # 板子专用 runners" >> docker-compose.yml
+        
+        # phytiumpi 板子配置
+        printf '%s\n' \
+            "  ${RUNNER_NAME_PREFIX}runner-phytiumpi:" \
+            "    <<: *runner_base" \
+            "    container_name: \"${RUNNER_NAME_PREFIX}runner-phytiumpi\"" \
+            "    command:" \
+            "      - /bin/bash" \
+            "      - -c" \
+            "      - |" \
+            "        set -e" \
+            "        mkdir -p /home/runner/test" \
+            "        cd /home/runner/test" \
+            "        wget -q https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.18/phytiumpi_linux.tar.gz" \
+            "        tar -xzf phytiumpi_linux.tar.gz" \
+            "        exec /home/runner/run.sh" \
+            "    devices:" \
+            "      - /dev/loop-control:/dev/loop-control" \
+            "      - /dev/loop0:/dev/loop0" \
+            "      - /dev/loop1:/dev/loop1" \
+            "      - /dev/loop2:/dev/loop2" \
+            "      - /dev/loop3:/dev/loop3" \
+            "      - /dev/kvm:/dev/kvm" \
+            "      - /dev/ttyUSB0:/dev/ttyUSB0" \
+            "      - /dev/ttyUSB1:/dev/ttyUSB1" \
+            "    group_add:" \
+            "      - 993" \
+            "      - dialout" \
+            "    environment:" \
+            "      <<: *runner_env" \
+            "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-phytiumpi\"" \
+            "      RUNNER_LABELS: \"phytiumpi\"" \
+            "      BOARD_POWER_ON: \"mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1\"" \
+            "      BOARD_POWER_OFF: \"mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0\"" \
+            "      BOARD_POWER_RESET: \"mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0 && sleep 2 && mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1\"" \
+            "      BOARD_DTB: \"/home/runner/test/phytiumpi.dtb\"" \
+            "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB1\"" \
+            "      BOARD_COMM_UART_BAUD: \"115200\"" \
+            "      BOARD_COMM_NET_IFACE: \"eth0\"" \
+            "      TFTP_SERVER: \"1\"" \
+            "      TFTP_DIR: \"phytiumpi\"" \
+            "      BIN_DIR: \"/home/runner/test/phytiumpi\"" \
+            "    volumes:" \
+            "      - /home/$(whoami)/test/phytiumpi:/home/runner/test/phytiumpi" \
+            "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-data:/home/runner" \
+            "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules:/etc/udev/rules.d" \
+            "" >> docker-compose.yml
+        
+        # roc-rk3568-pc 板子配置
+        printf '%s\n' \
+            "  ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc:" \
+            "    <<: *runner_base" \
+            "    container_name: \"${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc\"" \
+            "    command:" \
+            "      - /bin/bash" \
+            "      - -c" \
+            "      - |" \
+            "        set -e" \
+            "        mkdir -p /home/runner/test" \
+            "        cd /home/runner/test" \
+            "        wget -q https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.18/roc-rk3568-pc_linux.tar.gz" \
+            "        tar -xzf roc-rk3568-pc_linux.tar.gz" \
+            "        exec /home/runner/run.sh" \
+            "    devices:" \
+            "      - /dev/loop-control:/dev/loop-control" \
+            "      - /dev/loop0:/dev/loop0" \
+            "      - /dev/loop1:/dev/loop1" \
+            "      - /dev/loop2:/dev/loop2" \
+            "      - /dev/loop3:/dev/loop3" \
+            "      - /dev/kvm:/dev/kvm" \
+            "      - /dev/ttyUSB0:/dev/ttyUSB0" \
+            "      - /dev/ttyUSB1:/dev/ttyUSB1" \
+            "    group_add:" \
+            "      - 993" \
+            "      - dialout" \
+            "    environment:" \
+            "      <<: *runner_env" \
+            "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc\"" \
+            "      RUNNER_LABELS: \"roc-rk3568-pc\"" \
+            "      BOARD_POWER_ON: \"mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1\"" \
+            "      BOARD_POWER_OFF: \"mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0\"" \
+            "      BOARD_POWER_RESET: \"mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0 && sleep 2 && mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1\"" \
+            "      BOARD_DTB: \"/home/runner/test/roc-rk3568-pc.dtb\"" \
+            "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB2\"" \
+            "      BOARD_COMM_UART_BAUD: \"1500000\"" \
+            "    volumes:" \
+            "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data:/home/runner" \
+            "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:/etc/udev/rules.d" \
+            "" >> docker-compose.yml
+    fi
 
     # 生成 volumes
     echo "volumes:" >> docker-compose.yml
@@ -543,19 +547,22 @@ shell_generate_compose_file() {
             "    name: ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules" >> docker-compose.yml
     done
     
-    # 为 phytiumpi 板子生成 volumes
-    printf '%s\n' \
-        "  ${RUNNER_NAME_PREFIX}runner-phytiumpi-data:" \
-        "    name: ${RUNNER_NAME_PREFIX}runner-phytiumpi-data" \
-        "  ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules:" \
-        "    name: ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules" >> docker-compose.yml
-    
-    # 为 roc-rk3568-pc 板子生成 volumes
-    printf '%s\n' \
-        "  ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data:" \
-        "    name: ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data" \
-        "  ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:" \
-        "    name: ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules" >> docker-compose.yml
+    # 只有当 RUNNER_BOARD 大于 0 时才生成板子相关的 volumes
+    if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
+        # 为 phytiumpi 板子生成 volumes
+        printf '%s\n' \
+            "  ${RUNNER_NAME_PREFIX}runner-phytiumpi-data:" \
+            "    name: ${RUNNER_NAME_PREFIX}runner-phytiumpi-data" \
+            "  ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules:" \
+            "    name: ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules" >> docker-compose.yml
+        
+        # 为 roc-rk3568-pc 板子生成 volumes
+        printf '%s\n' \
+            "  ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data:" \
+            "    name: ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data" \
+            "  ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:" \
+            "    name: ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules" >> docker-compose.yml
+    fi
 }
 
 # ------------------------------- GitHub API helpers -------------------------------
@@ -804,7 +811,11 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
             RUNNER_IMAGE="$(shell_prepare_runner_image)";
 
-            shell_info "Generating $COMPOSE_FILE with $count generic runners and 2 board-specific runners."
+            if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
+                shell_info "Generating $COMPOSE_FILE with $count generic runners and board-specific runners."
+            else
+                shell_info "Generating $COMPOSE_FILE with $count generic runners."
+            fi
 
             shell_generate_compose_file "$count"
 
@@ -818,8 +829,20 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             cont_count=0
             cont_list="$(docker_list_existing_containers)"
             if [[ -n "$cont_list" ]]; then cont_count=$(echo "$cont_list" | wc -l | tr -d ' '); fi
-            generic_count=$(( cont_count - 2 ))
-            shell_info "Regenerating $COMPOSE_FILE with ${generic_count} existing runners and 2 board-specific runners."
+            
+            # 计算通用 runner 的数量
+            if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
+                # 如果启用了板子 runner，则减去 RUNNER_BOARD 个板子 runner
+                generic_count=$(( cont_count - RUNNER_BOARD ))
+            else
+                # 如果没有启用板子 runner，则所有容器都是通用 runner
+                generic_count=$cont_count
+            fi
+            if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
+                shell_info "Regenerating $COMPOSE_FILE with ${generic_count} existing runners and board-specific runners."
+            else
+                shell_info "Regenerating $COMPOSE_FILE with ${generic_count} existing runners."
+            fi
             RUNNER_IMAGE="$(shell_prepare_runner_image)";
             REG_TOKEN="$(shell_get_reg_token)"
             shell_generate_compose_file "$generic_count"
