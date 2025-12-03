@@ -456,8 +456,8 @@ shell_generate_compose_file() {
             "      - -c" \
             "      - |" \
             "        set -e" \
-            "        mkdir -p /home/runner/test" \
-            "        cd /home/runner/test" \
+            "        mkdir -p /home/runner/board" \
+            "        cd /home/runner/board" \
             "        # 尝试下载文件，如果失败则跳过" \
             "        echo \"Attempting to download phytiumpi files...\"" \
             "        if curl -fsSL --connect-timeout 30 --max-time 300 https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.18/phytiumpi_linux.tar.gz -o phytiumpi_linux.tar.gz; then" \
@@ -487,7 +487,7 @@ shell_generate_compose_file() {
             "      BOARD_POWER_ON: \"mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1\"" \
             "      BOARD_POWER_OFF: \"mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0\"" \
             "      BOARD_POWER_RESET: \"mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0 && sleep 2 && mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1\"" \
-            "      BOARD_DTB: \"/home/runner/test/phytiumpi.dtb\"" \
+            "      BOARD_DTB: \"/home/runner/board/phytiumpi.dtb\"" \
             "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB1\"" \
             "      BOARD_COMM_UART_BAUD: \"115200\"" \
             "      BOARD_COMM_NET_IFACE: \"eth0\"" \
@@ -495,7 +495,7 @@ shell_generate_compose_file() {
             "      TFTP_DIR: \"phytiumpi\"" \
             "      BIN_DIR: \"/home/runner/test/phytiumpi\"" \
             "    volumes:" \
-            "      - /home/$(whoami)/test/phytiumpi:/home/runner/test/phytiumpi" \
+            "      - /home/$(whoami)/test/phytiumpi:/home/runner/tftp" \
             "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-data:/home/runner" \
             "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules:/etc/udev/rules.d" \
             "" >> docker-compose.yml
@@ -510,8 +510,8 @@ shell_generate_compose_file() {
             "      - -c" \
             "      - |" \
             "        set -e" \
-            "        mkdir -p /home/runner/test" \
-            "        cd /home/runner/test" \
+            "        mkdir -p /home/runner/board" \
+            "        cd /home/runner/board" \
             "        # 尝试下载文件，如果失败则跳过" \
             "        echo \"Attempting to download roc-rk3568-pc files...\"" \
             "        if curl -fsSL --connect-timeout 30 --max-time 300 https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.18/roc-rk3568-pc_linux.tar.gz -o roc-rk3568-pc_linux.tar.gz; then" \
@@ -541,7 +541,7 @@ shell_generate_compose_file() {
             "      BOARD_POWER_ON: \"mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1\"" \
             "      BOARD_POWER_OFF: \"mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0\"" \
             "      BOARD_POWER_RESET: \"mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0 && sleep 2 && mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1\"" \
-            "      BOARD_DTB: \"/home/runner/test/roc-rk3568-pc.dtb\"" \
+            "      BOARD_DTB: \"/home/runner/board/roc-rk3568-pc.dtb\"" \
             "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB2\"" \
             "      BOARD_COMM_UART_BAUD: \"1500000\"" \
             "    volumes:" \
