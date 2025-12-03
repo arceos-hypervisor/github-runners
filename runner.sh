@@ -458,8 +458,15 @@ shell_generate_compose_file() {
             "        set -e" \
             "        mkdir -p /home/runner/test" \
             "        cd /home/runner/test" \
-            "        wget -q https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.18/phytiumpi_linux.tar.gz" \
-            "        tar -xzf phytiumpi_linux.tar.gz" \
+            "        # 尝试下载文件，如果失败则跳过" \
+            "        echo \"Attempting to download phytiumpi files...\"" \
+            "        if curl -fsSL --connect-timeout 30 --max-time 300 https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.18/phytiumpi_linux.tar.gz -o phytiumpi_linux.tar.gz; then" \
+            "            echo \"Download successful, extracting...\"" \
+            "            tar -xzf phytiumpi_linux.tar.gz" \
+            "            echo \"Extraction completed\"" \
+            "        else" \
+            "            echo \"Download failed, continuing with existing files if any...\"" \
+            "        fi" \
             "        exec /home/runner/run.sh" \
             "    devices:" \
             "      - /dev/loop-control:/dev/loop-control" \
@@ -505,8 +512,15 @@ shell_generate_compose_file() {
             "        set -e" \
             "        mkdir -p /home/runner/test" \
             "        cd /home/runner/test" \
-            "        wget -q https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.18/roc-rk3568-pc_linux.tar.gz" \
-            "        tar -xzf roc-rk3568-pc_linux.tar.gz" \
+            "        # 尝试下载文件，如果失败则跳过" \
+            "        echo \"Attempting to download roc-rk3568-pc files...\"" \
+            "        if curl -fsSL --connect-timeout 30 --max-time 300 https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.18/roc-rk3568-pc_linux.tar.gz -o roc-rk3568-pc_linux.tar.gz; then" \
+            "            echo \"Download successful, extracting...\"" \
+            "            tar -xzf roc-rk3568-pc_linux.tar.gz" \
+            "            echo \"Extraction completed\"" \
+            "        else" \
+            "            echo \"Download failed, continuing with existing files if any...\"" \
+            "        fi" \
             "        exec /home/runner/run.sh" \
             "    devices:" \
             "      - /dev/loop-control:/dev/loop-control" \
