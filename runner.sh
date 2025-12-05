@@ -484,14 +484,13 @@ shell_generate_compose_file() {
             "      <<: *runner_env" \
             "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-phytiumpi\"" \
             "      RUNNER_LABELS: \"phytiumpi\"" \
-            "      BOARD_POWER_ON: \"mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1\"" \
-            "      BOARD_POWER_OFF: \"mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0\"" \
-            "      BOARD_POWER_RESET: \"mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0 && sleep 2 && mbpoll -m rtu -a 1 -r 6 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1\"" \
+            "      BOARD_POWER_ON: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB1 1\"" \
+            "      BOARD_POWER_OFF: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB1 0\"" \
+            "      BOARD_POWER_RESET: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB1 0 && sleep 2 && mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB1 1\"" \
             "      BOARD_DTB: \"/home/runner/board/phytiumpi.dtb\"" \
-            "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB1\"" \
+            "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB0\"" \
             "      BOARD_COMM_UART_BAUD: \"115200\"" \
-            "      BOARD_COMM_NET_IFACE: \"eth0\"" \
-            "      TFTP_SERVER: \"1\"" \
+            "      BOARD_COMM_NET_IFACE: \"eno2np1\"" \
             "      TFTP_DIR: \"phytiumpi\"" \
             "      BIN_DIR: \"/home/runner/test/phytiumpi\"" \
             "    volumes:" \
@@ -529,8 +528,8 @@ shell_generate_compose_file() {
             "      - /dev/loop2:/dev/loop2" \
             "      - /dev/loop3:/dev/loop3" \
             "      - /dev/kvm:/dev/kvm" \
-            "      - /dev/ttyUSB0:/dev/ttyUSB0" \
-            "      - /dev/ttyUSB1:/dev/ttyUSB1" \
+            "      - /dev/ttyUSB2:/dev/ttyUSB2" \
+            "      - /dev/ttyUSB3:/dev/ttyUSB3" \
             "    group_add:" \
             "      - 993" \
             "      - dialout" \
@@ -538,11 +537,11 @@ shell_generate_compose_file() {
             "      <<: *runner_env" \
             "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc\"" \
             "      RUNNER_LABELS: \"roc-rk3568-pc\"" \
-            "      BOARD_POWER_ON: \"mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1\"" \
-            "      BOARD_POWER_OFF: \"mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0\"" \
-            "      BOARD_POWER_RESET: \"mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 0 && sleep 2 && mbpoll -m rtu -a 1 -r 5 -t 0 -b 9600 -P none -v /dev/ttyUSB0 1\"" \
+            "      BOARD_POWER_ON: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB2 1\"" \
+            "      BOARD_POWER_OFF: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB2 0\"" \
+            "      BOARD_POWER_RESET: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB2 0 && sleep 2 && mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB2 1\"" \
             "      BOARD_DTB: \"/home/runner/board/roc-rk3568-pc.dtb\"" \
-            "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB2\"" \
+            "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB3\"" \
             "      BOARD_COMM_UART_BAUD: \"1500000\"" \
             "    volumes:" \
             "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data:/home/runner" \
