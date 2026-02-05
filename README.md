@@ -56,6 +56,27 @@ chmod +x runner.sh
 - If a `Dockerfile` exists in the repository root, the script will compute a hash of its contents and rebuild the custom runner image when that hash changes.
 - Registration tokens are cached in `.reg_token.cache`. Control cache TTL with `REG_TOKEN_CACHE_TTL` (seconds).
 
+## Multi-org Shared Hardware
+
+When multiple GitHub organizations share the same hardware test environment (serial ports, power control, etc.), concurrent CI runs can cause resource conflicts. Use the **runner-wrapper** to serialize execution via file locks.
+
+### Quick setup
+
+1. Set `RUNNER_RESOURCE_ID` to the same value for all runners that share hardware (e.g. `board-phytiumpi`).
+2. Mount a shared lock directory: `-v /tmp/github-runner-locks:/tmp/github-runner-locks`
+3. Replace the container command with the wrapper:
+
+```yaml
+command: ["/home/runner/runner-wrapper/runner-wrapper.sh"]
+environment:
+  RUNNER_RESOURCE_ID: "board-phytiumpi"
+  RUNNER_SCRIPT: "/home/runner/run.sh"
+volumes:
+  - /tmp/github-runner-locks:/tmp/github-runner-locks
+```
+
+See [runner-wrapper/README.md](runner-wrapper/README.md) for details. Reference: [Discussion #341](https://github.com/orgs/arceos-hypervisor/discussions/341).
+
 ## Development and Contributing
 
 Contributions are welcome. Suggested workflow:
