@@ -56,6 +56,27 @@ chmod +x runner.sh
 - 若存在 `Dockerfile`，脚本会根据其哈希决定是否重建 `RUNNER_CUSTOM_IMAGE`。
 - 注册令牌会缓存到 `.reg_token.cache`，可通过 `REG_TOKEN_CACHE_TTL` 配置过期时间（秒）。
 
+## 多组织共享硬件
+
+当多个 GitHub 组织共享同一套硬件测试环境（串口、电源控制等）时，并发 CI 会导致资源冲突。可使用 **runner-wrapper** 通过文件锁实现串行执行。
+
+### 快速配置
+
+1. 为所有共享硬件的 Runner 设置相同的 `RUNNER_RESOURCE_ID`（如 `board-phytiumpi`）。
+2. 挂载共享锁目录：`-v /tmp/github-runner-locks:/tmp/github-runner-locks`
+3. 将容器 command 改为 wrapper：
+
+```yaml
+command: ["/home/runner/runner-wrapper/runner-wrapper.sh"]
+environment:
+  RUNNER_RESOURCE_ID: "board-phytiumpi"
+  RUNNER_SCRIPT: "/home/runner/run.sh"
+volumes:
+  - /tmp/github-runner-locks:/tmp/github-runner-locks
+```
+
+详见 [runner-wrapper/README.md](runner-wrapper/README.md)。参考：[Discussion #341](https://github.com/orgs/arceos-hypervisor/discussions/341)。
+
 ## 贡献
 
 欢迎贡献：
