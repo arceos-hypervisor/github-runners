@@ -77,9 +77,11 @@ RUN mkdir -p /tmp/qemu-build \
 RUN usermod -aG dialout runner
 RUN usermod -aG kvm runner
 
-# 多组织共享硬件锁：runner-wrapper 用于多 org 共享同一硬件时的并发控制
+# 多组织共享硬件锁：runner-wrapper 用于多 org 共享同一硬件时的并发控制（Job 级别锁）
 COPY runner-wrapper /home/runner/runner-wrapper
-RUN chmod +x /home/runner/runner-wrapper/runner-wrapper.sh
+RUN chmod +x /home/runner/runner-wrapper/runner-wrapper.sh \
+    /home/runner/runner-wrapper/pre-job-lock.sh \
+    /home/runner/runner-wrapper/post-job-lock.sh
 
 # Return to the default user expected by the runner image
 USER runner
