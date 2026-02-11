@@ -25,6 +25,13 @@ RUNNER_WORKDIR="${RUNNER_WORKDIR:-}"
 RUNNER_LABELS="${RUNNER_LABELS:-intel}"
 RUNNER_BOARD="2"
 DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
+# 多组织共享硬件锁：设置后板子 runner 将使用 runner-wrapper，并挂载锁目录
+# 可为每块板子设不同 ID（如 RUNNER_RESOURCE_ID_PHYTIUMPI、RUNNER_RESOURCE_ID_ROC_RK3568_PC），不同板子 job 并行
+RUNNER_RESOURCE_ID="${RUNNER_RESOURCE_ID:-}"
+RUNNER_RESOURCE_ID_PHYTIUMPI="${RUNNER_RESOURCE_ID_PHYTIUMPI:-${RUNNER_RESOURCE_ID}}"
+RUNNER_RESOURCE_ID_ROC_RK3568_PC="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-${RUNNER_RESOURCE_ID}}"
+RUNNER_LOCK_DIR="${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
+RUNNER_LOCK_HOST_PATH="${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}"
 COMPOSE_FILE="docker-compose.yml"
 DOCKERFILE_HASH_FILE="${DOCKERFILE_HASH_FILE:-.dockerfile.sha256}"
 
@@ -72,6 +79,11 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "RUNNER_NAME_PREFIX" "Runner name prefix"
   printf "  %-${KEYW}s %s\n" "RUNNER_IMAGE" "Image used for compose generation (default ghcr.io/actions/actions-runner:latest)"
   printf "  %-${KEYW}s %s\n" "RUNNER_CUSTOM_IMAGE" "Image tag used for auto-build (can override)"
+  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID" "Default lock resource ID for all board runners; same ID = serial, different = parallel"
+  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_PHYTIUMPI" "Override for phytiumpi board (default: RUNNER_RESOURCE_ID)"
+  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_ROC_RK3568_PC" "Override for roc-rk3568-pc board (default: RUNNER_RESOURCE_ID)"
+  printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_DIR" "Lock dir in container (default /tmp/github-runner-locks)"
+  printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_HOST_PATH" "Lock dir on host for bind mount (default /tmp/github-runner-locks)"
   echo
   echo "Example workflow runs-on: runs-on: [self-hosted, linux, docker]"
 
@@ -387,7 +399,22 @@ shell_get_compose_file() {
 
 shell_generate_compose_file() {
     local general_count=$1
-    
+    # 每块板子可单独设 RUNNER_RESOURCE_ID，未设则用全局 RUNNER_RESOURCE_ID；不同板子不同 ID 则并行
+    local res_phytiumpi="${RUNNER_RESOURCE_ID_PHYTIUMPI:-}"
+    local res_roc="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}"
+    local runner_entrypoint_phytiumpi="exec /home/runner/run.sh"
+    local runner_entrypoint_roc="exec /home/runner/run.sh"
+    [[ -n "$res_phytiumpi" ]] && runner_entrypoint_phytiumpi="exec /home/runner/runner-wrapper/runner-wrapper.sh"
+    [[ -n "$res_roc" ]] && runner_entrypoint_roc="exec /home/runner/runner-wrapper/runner-wrapper.sh"
+    local extra_env_phytiumpi=()
+    local extra_env_roc=()
+    [[ -n "$res_phytiumpi" ]] && extra_env_phytiumpi=("      RUNNER_RESOURCE_ID: \"$res_phytiumpi\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
+    [[ -n "$res_roc" ]] && extra_env_roc=("      RUNNER_RESOURCE_ID: \"$res_roc\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
+    local extra_vol_phytiumpi=""
+    local extra_vol_roc=""
+    [[ -n "$res_phytiumpi" ]] && extra_vol_phytiumpi="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
+    [[ -n "$res_roc" ]] && extra_vol_roc="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
+
     # 使用 printf 输出文件头
     printf '%s\n' \
         "# 自动生成的 Docker Compose 配置" \
@@ -467,7 +494,7 @@ shell_generate_compose_file() {
             "        else" \
             "            echo \"Download failed, continuing with existing files if any...\"" \
             "        fi" \
-            "        exec /home/runner/run.sh" \
+            "        ${runner_entrypoint_phytiumpi}" \
             "    devices:" \
             "      - /dev/loop-control:/dev/loop-control" \
             "      - /dev/loop0:/dev/loop0" \
@@ -493,8 +520,10 @@ shell_generate_compose_file() {
             "      BOARD_COMM_NET_IFACE: \"eno2np1\"" \
             "      TFTP_DIR: \"phytiumpi\"" \
             "      BIN_DIR: \"/home/runner/test/phytiumpi\"" \
+            "${extra_env_phytiumpi[@]}" \
             "    volumes:" \
             "      - /home/$(whoami)/test/phytiumpi:/home/runner/tftp" \
+            "$extra_vol_phytiumpi" \
             "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-data:/home/runner" \
             "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules:/etc/udev/rules.d" \
             "" >> docker-compose.yml
@@ -520,7 +549,7 @@ shell_generate_compose_file() {
             "        else" \
             "            echo \"Download failed, continuing with existing files if any...\"" \
             "        fi" \
-            "        exec /home/runner/run.sh" \
+            "        ${runner_entrypoint_roc}" \
             "    devices:" \
             "      - /dev/loop-control:/dev/loop-control" \
             "      - /dev/loop0:/dev/loop0" \
@@ -543,7 +572,9 @@ shell_generate_compose_file() {
             "      BOARD_DTB: \"/home/runner/board/roc-rk3568-pc.dtb\"" \
             "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB3\"" \
             "      BOARD_COMM_UART_BAUD: \"1500000\"" \
+            "${extra_env_roc[@]}" \
             "    volumes:" \
+            "$extra_vol_roc" \
             "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data:/home/runner" \
             "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:/etc/udev/rules.d" \
             "" >> docker-compose.yml

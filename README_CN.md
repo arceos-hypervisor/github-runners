@@ -31,7 +31,14 @@
 chmod +x runner.sh
 ```
 
-2. 生成并启动 Runner：
+2. （可选）复制 `.env.example` 为 `.env` 并填写 `ORG`、`GH_PAT` 等；不创建 `.env` 时，首次运行会提示输入。
+
+```bash
+cp .env.example .env
+# 编辑 .env，至少填写 ORG 与 GH_PAT
+```
+
+3. 生成并启动 Runner：
 
 ```bash
 ./runner.sh init [-n N]
@@ -60,7 +67,11 @@ chmod +x runner.sh
 
 当多个 GitHub 组织共享同一套硬件测试环境（串口、电源控制等）时，并发 CI 会导致资源冲突。可使用 **runner-wrapper** 通过文件锁实现串行执行。
 
+**注册模型说明**：GitHub 官方模型中，一个 self-hosted runner 只能注册到一个组织或一个仓库，无法同时挂到多个组织。当前实现由 `.env` 的 `ORG`/`REPO` 决定注册目标。多组织共享硬件时，采用「每个组织一套 .env、一套 Runner 实例」，多套 Runner 通过相同的 `RUNNER_RESOURCE_ID` 和共享锁目录实现 job 串行，而非同一 Runner 注册到多个组织。
+
 ### 快速配置
+
+使用 **runner.sh** 生成 compose 时，在 `.env` 中设置 `RUNNER_RESOURCE_ID`（如 `board-phytiumpi`）即可让板子 runner 自动使用 wrapper 并挂载锁目录，无需手改 compose。若需手配或非 runner.sh 生成的环境：
 
 1. 为所有共享硬件的 Runner 设置相同的 `RUNNER_RESOURCE_ID`（如 `board-phytiumpi`）。
 2. 挂载共享锁目录：`-v /tmp/github-runner-locks:/tmp/github-runner-locks`
@@ -74,6 +85,8 @@ environment:
 volumes:
   - /tmp/github-runner-locks:/tmp/github-runner-locks
 ```
+
+**性能说明**：串行是硬件本身的限制（一块板子一次只能测一个 job），本方案把「无秩序抢占」变为「有序排队」，不额外降低吞吐。如需提升吞吐量，可为每块板子设置不同的 `RUNNER_RESOURCE_ID`（或使用 `RUNNER_RESOURCE_ID_PHYTIUMPI`、`RUNNER_RESOURCE_ID_ROC_RK3568_PC` 分别指定），不同板子的 job 可并行执行，吞吐量随板子数量线性增长。
 
 详见 [runner-wrapper/README.md](runner-wrapper/README.md)。参考：[Discussion #341](https://github.com/orgs/arceos-hypervisor/discussions/341)。
 

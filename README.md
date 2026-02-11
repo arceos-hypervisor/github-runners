@@ -31,7 +31,14 @@ The toolkit supports both organization-scoped and repository-scoped runners. To 
 chmod +x runner.sh
 ```
 
-2. Run initialization (generates compose, builds image if needed, and starts containers):
+2. (Optional) Copy `.env.example` to `.env` and set `ORG`, `GH_PAT`, etc. If you skip this, the script will prompt for these on first run.
+
+```bash
+cp .env.example .env
+# Edit .env and set at least ORG and GH_PAT
+```
+
+3. Run initialization (generates compose, builds image if needed, and starts containers):
 
 ```bash
 ./runner.sh init [-n N]
@@ -60,7 +67,11 @@ chmod +x runner.sh
 
 When multiple GitHub organizations share the same hardware test environment (serial ports, power control, etc.), concurrent CI runs can cause resource conflicts. Use the **runner-wrapper** to serialize execution via file locks.
 
+**Registration model**: GitHub’s runner model allows each self-hosted runner to register to only one organization or repository, not multiple orgs. In this repo, the target is set by `ORG`/`REPO` in `.env`. For multi-org shared hardware, use one `.env` and one set of runner instances per organization; multiple sets share the same `RUNNER_RESOURCE_ID` and lock directory so jobs run serially—not one runner registered to multiple orgs.
+
 ### Quick setup
+
+When using **runner.sh** to generate compose, set `RUNNER_RESOURCE_ID` in `.env` (e.g. `board-phytiumpi`) so board runners use the wrapper and lock directory automatically. For manual or non–runner.sh setups:
 
 1. Set `RUNNER_RESOURCE_ID` to the same value for all runners that share hardware (e.g. `board-phytiumpi`).
 2. Mount a shared lock directory: `-v /tmp/github-runner-locks:/tmp/github-runner-locks`
@@ -74,6 +85,8 @@ environment:
 volumes:
   - /tmp/github-runner-locks:/tmp/github-runner-locks
 ```
+
+**Performance**: Serialization is required by hardware (one board runs one job at a time). This setup turns chaotic contention into an ordered queue and does not reduce throughput. To increase throughput, set a different `RUNNER_RESOURCE_ID` per board (e.g. `RUNNER_RESOURCE_ID_PHYTIUMPI`, `RUNNER_RESOURCE_ID_ROC_RK3568_PC`); jobs on different boards then run in parallel and throughput scales linearly with the number of boards.
 
 See [runner-wrapper/README.md](runner-wrapper/README.md) for details. Reference: [Discussion #341](https://github.com/orgs/arceos-hypervisor/discussions/341).
 
