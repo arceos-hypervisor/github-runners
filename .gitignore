@@ -1,4 +1,4 @@
-.env
-.reg_token.cache
-.dockerfile.sha256
-docker-compose.yml
+.env*
+.reg_token*
+.dockerfile*
+docker-compose*
