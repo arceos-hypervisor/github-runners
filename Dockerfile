@@ -68,6 +68,8 @@ RUN mkdir -p /tmp/qemu-build \
         --enable-kvm \
         --disable-docs \
         --enable-virtfs \
+        --enable-vhost-net \
+        --enable-slirp \
     && make -j$(nproc) \
     && make install \
     && cd / \
