@@ -39,8 +39,6 @@ RUNNER_WORKDIR="${RUNNER_WORKDIR:-}"
 RUNNER_LABELS="${RUNNER_LABELS:-intel}"
 RUNNER_BOARD="2"
 DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
-# 普通 runners 的全局资源 ID：可选，设置后普通 runners 会通过 flock 串行执行以避免硬件竞争。多组织部署时推荐设置为相同值（如 "general-runners"）
-RUNNER_RESOURCE_ID_GENERAL="${RUNNER_RESOURCE_ID_GENERAL:-}"
 # 板子级：未设置时用本板默认值（同类型板串行、不同类型板并行）；多组织共享同一块板时显式设为相同 ID 即可
 RUNNER_RESOURCE_ID_PHYTIUMPI="${RUNNER_RESOURCE_ID_PHYTIUMPI:-}"
 RUNNER_RESOURCE_ID_ROC_RK3568_PC="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}"
@@ -124,7 +122,6 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "RUNNER_NAME_PREFIX" "Container name prefix (default: <hostname>-<org>[-<repo>]-); auto includes ORG/REPO to avoid name conflicts"
   printf "  %-${KEYW}s %s\n" "RUNNER_IMAGE" "Image used for compose generation (default ghcr.io/actions/actions-runner:latest)"
   printf "  %-${KEYW}s %s\n" "RUNNER_CUSTOM_IMAGE" "Image tag used for auto-build (can override)"
-  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_GENERAL" "Lock ID for generic runners (optional); prevents hardware contention in multi-org deployments"
   printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_PHYTIUMPI" "Lock ID for phytiumpi board (default: board-phytiumpi); same ID = serial across runners"
   printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_ROC_RK3568_PC" "Lock ID for roc-rk3568-pc board (default: board-roc-rk3568-pc); same ID = serial"
   printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_DIR" "Lock dir in container (default /tmp/github-runner-locks)"
@@ -445,60 +442,52 @@ shell_get_compose_file() {
 shell_generate_compose_file() {
     local general_count=$1
     # ════════════════════════════════════════════════════════════════
-    # 第一步：为三种 runner 类型定义资源 ID
+    # 第一步：为两种板子 runner 类型定义资源 ID
     # ════════════════════════════════════════════════════════════════
     # 硬件板 phytiumpi - 总是启用文件锁
     local res_phytiumpi="${RUNNER_RESOURCE_ID_PHYTIUMPI:-}"
     # 硬件板 roc - 总是启用文件锁
     local res_roc="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}"
-    # 普通 runners（可选）- 用户可选择启用文件锁，默认不启用（向后兼容）
-    local res_general="${RUNNER_RESOURCE_ID_GENERAL:-}"
 
     # ════════════════════════════════════════════════════════════════
-    # 第二步：三种 runner 类型的 entrypoint 配置
+    # 第二步：两种板子 runner 类型的 entrypoint 配置
     # ════════════════════════════════════════════════════════════════
-    # 设计说明：若设置了资源 ID（RUNNER_RESOURCE_ID_*），所有 runner 类型都改用
-    #   runner-wrapper.sh 来管理文件锁——包括普通 runners
-    # 默认：所有 runner 类型都使用 /home/runner/run.sh（不经过 runner-wrapper）
+    # 设计说明：若设置了资源 ID（RUNNER_RESOURCE_ID_*），板子 runner 使用
+    #   runner-wrapper.sh 来管理文件锁
+    # 普通 runner 始终使用 /home/runner/run.sh（不经过 runner-wrapper）
     local runner_entrypoint_phytiumpi="/home/runner/run.sh"
     local runner_entrypoint_roc="/home/runner/run.sh"
-    local runner_entrypoint_general="/home/runner/run.sh"
-    # 若设置了资源 ID，则改用 runner-wrapper 来处理文件锁（适用于所有 runner 类型）
+    # 若设置了资源 ID，则改用 runner-wrapper 来处理文件锁
     [[ -n "$res_phytiumpi" ]] && runner_entrypoint_phytiumpi="/home/runner/runner-wrapper/runner-wrapper.sh"
     [[ -n "$res_roc" ]] && runner_entrypoint_roc="/home/runner/runner-wrapper/runner-wrapper.sh"
-    [[ -n "$res_general" ]] && runner_entrypoint_general="/home/runner/runner-wrapper/runner-wrapper.sh"
 
     # ════════════════════════════════════════════════════════════════
-    # 第三步：为三种 runner 类型准备额外的环境变量数组
+    # 第三步：为两种板子 runner 类型准备额外的环境变量数组
     # ════════════════════════════════════════════════════════════════
-    # 重复模式说明：以下三部分几乎完全相同，都是：
+    # 重复模式说明：以下两部分几乎完全相同，都是：
     #   1. 定义空数组：extra_env_X=()
     #   2. 如果有资源 ID，则添加三个环境变量：
     #      - RUNNER_RESOURCE_ID: 用于锁机制
     #      - RUNNER_SCRIPT: 给 runner-wrapper 使用的脚本路径
     #      - RUNNER_LOCK_DIR: 容器内锁文件目录
-    # 原因：三种 runner 都可能需要文件锁机制，但都是可选的
+    # 原因：两种板子 runner 都可能需要文件锁机制
     local extra_env_phytiumpi=()
     local extra_env_roc=()
-    local extra_env_general=()
     # 只有设置了相应的资源 ID，才为该类型 runner 添加锁相关环境变量
     [[ -n "$res_phytiumpi" ]] && extra_env_phytiumpi=("      RUNNER_RESOURCE_ID: \"$res_phytiumpi\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
     [[ -n "$res_roc" ]] && extra_env_roc=("      RUNNER_RESOURCE_ID: \"$res_roc\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
-    [[ -n "$res_general" ]] && extra_env_general=("      RUNNER_RESOURCE_ID: \"$res_general\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
 
     # ════════════════════════════════════════════════════════════════
-    # 第四步：为三种 runner 类型准备卷挂载配置
+    # 第四步：为两种板子 runner 类型准备卷挂载配置
     # ════════════════════════════════════════════════════════════════
-    # 重复模式说明：以下三部分完全相同（除变量名），都实现：
+    # 重复模式说明：以下两部分完全相同（除变量名），都实现：
     #   如果设置了资源 ID，则挂载主机的锁文件目录到容器内
     # 原因：文件锁机制需要在主机和容器间共享锁文件
     local extra_vol_phytiumpi=""
     local extra_vol_roc=""
-    local extra_vol_general=""
     # 只有设置了相应的资源 ID，才为该类型 runner 挂载锁文件目录
     [[ -n "$res_phytiumpi" ]] && extra_vol_phytiumpi="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
     [[ -n "$res_roc" ]] && extra_vol_roc="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
-    [[ -n "$res_general" ]] && extra_vol_general="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
 
     # 使用 printf 输出文件头
     printf '%s\n' \
@@ -533,7 +522,7 @@ shell_generate_compose_file() {
             "  ${RUNNER_NAME_PREFIX}runner-${i}:" \
             "    <<: *runner_base" \
             "    container_name: \"${RUNNER_NAME_PREFIX}runner-${i}\"" \
-            "    command: [\"${runner_entrypoint_general}\"]" \
+            "    command: [\"/home/runner/run.sh\"]" \
             "    devices:" \
             "      - /dev/loop-control:/dev/loop-control" \
             "      - /dev/loop0:/dev/loop0" \
@@ -547,11 +536,9 @@ shell_generate_compose_file() {
             "      <<: *runner_env" \
             "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-${i}\"" \
             "      RUNNER_LABELS: \"${RUNNER_LABELS}\"" \
-            "${extra_env_general[@]}" \
             "    volumes:" \
             "      - ${RUNNER_NAME_PREFIX}runner-${i}-data:/home/runner" \
             "      - ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules:/etc/udev/rules.d" \
-            "$extra_vol_general" \
             "" >> "${COMPOSE_FILE}"
     done
 
