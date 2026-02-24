@@ -59,6 +59,7 @@ cp .env.example .env
 
 ### 注意事项
 
+- **容器命名**：默认前缀自动拼入 `ORG`（及 `REPO`），格式为 `<hostname>-<org>-runner-N` 或 `<hostname>-<org>-<repo>-runner-N`，避免同一主机上多组织/多仓库副本容器重名。可通过 `RUNNER_NAME_PREFIX` 显式覆盖。
 - `BOARD_RUNNERS` 格式：`name:label1[,label2];name2:label1`。开发板实例将仅使用 `BOARD_RUNNERS` 中定义的标签，不会追加全局 `RUNNER_LABELS`。
 - 若存在 `Dockerfile`，脚本会根据其哈希决定是否重建 `RUNNER_CUSTOM_IMAGE`。
 - 注册令牌会缓存到 `.reg_token.cache`，可通过 `REG_TOKEN_CACHE_TTL` 配置过期时间（秒）。
@@ -67,13 +68,13 @@ cp .env.example .env
 
 当多个 GitHub 组织共享同一套硬件测试环境（串口、电源控制等）时，并发 CI 会导致资源冲突。可使用 **runner-wrapper** 通过文件锁实现串行执行。
 
-**注册模型说明**：GitHub 官方模型中，一个 self-hosted runner 只能注册到一个组织或一个仓库，无法同时挂到多个组织。当前实现由 `.env` 的 `ORG`/`REPO` 决定注册目标。多组织共享硬件时，采用「每个组织一套 .env、一套 Runner 实例」，多套 Runner 通过相同的 `RUNNER_RESOURCE_ID` 和共享锁目录实现 job 串行，而非同一 Runner 注册到多个组织。
+**注册模型说明**：GitHub 官方模型中，一个 self-hosted runner 只能注册到一个组织或一个仓库，无法同时挂到多个组织。当前实现由 `.env` 的 `ORG`/`REPO` 决定注册目标。多组织共享硬件时，采用「每个组织一套 .env、一套 Runner 实例」，多套 Runner 通过相同的板子级锁 ID（如 `RUNNER_RESOURCE_ID_PHYTIUMPI`）和共享锁目录实现 job 串行，而非同一 Runner 注册到多个组织。
 
 ### 快速配置
 
-使用 **runner.sh** 生成 compose 时，在 `.env` 中设置 `RUNNER_RESOURCE_ID`（如 `board-phytiumpi`）即可让板子 runner 自动使用 wrapper 并挂载锁目录，无需手改 compose。若需手配或非 runner.sh 生成的环境：
+使用 **runner.sh** 生成 compose 时，板子 runner 默认即使用 wrapper 并挂载锁目录；锁 ID 为「有定义用定义的，否则用该板默认值」（phytiumpi 默认 `board-phytiumpi`，roc-rk3568-pc 默认 `board-roc-rk3568-pc`），不回退到全局 `RUNNER_RESOURCE_ID`，避免所有板子共一把锁导致无法并行。多组织共享同一块板时，在 `.env` 中为该板显式设置相同 ID（如 `RUNNER_RESOURCE_ID_PHYTIUMPI=board-phytiumpi`）。若需手配或非 runner.sh 生成的环境：
 
-1. 为所有共享硬件的 Runner 设置相同的 `RUNNER_RESOURCE_ID`（如 `board-phytiumpi`）。
+1. 为所有共享同一块硬件的 Runner 设置相同的板子级变量（如 `RUNNER_RESOURCE_ID_PHYTIUMPI=board-phytiumpi`）。
 2. 挂载共享锁目录：`-v /tmp/github-runner-locks:/tmp/github-runner-locks`
 3. 将容器 command 改为 wrapper：
 
@@ -86,7 +87,7 @@ volumes:
   - /tmp/github-runner-locks:/tmp/github-runner-locks
 ```
 
-**性能说明**：串行是硬件本身的限制（一块板子一次只能测一个 job），本方案把「无秩序抢占」变为「有序排队」，不额外降低吞吐。如需提升吞吐量，可为每块板子设置不同的 `RUNNER_RESOURCE_ID`（或使用 `RUNNER_RESOURCE_ID_PHYTIUMPI`、`RUNNER_RESOURCE_ID_ROC_RK3568_PC` 分别指定），不同板子的 job 可并行执行，吞吐量随板子数量线性增长。
+**性能说明**：串行是硬件本身的限制（一块板子一次只能测一个 job），本方案把「无秩序抢占」变为「有序排队」，不额外降低吞吐。默认每块板子使用各自默认锁 ID（phytiumpi / roc-rk3568-pc 不同），不同板子的 job 可并行；多组织共享同一块板时显式设置该板相同的 `RUNNER_RESOURCE_ID_*` 即可串行。
 
 详见 [runner-wrapper/README.md](runner-wrapper/README.md)。参考：[Discussion #341](https://github.com/orgs/arceos-hypervisor/discussions/341)。
 

@@ -19,17 +19,30 @@ REG_TOKEN_CACHE_TTL="${REG_TOKEN_CACHE_TTL:-300}" # seconds, default 5 minutes
 # Runner container related parameters
 RUNNER_IMAGE="${RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}"
 RUNNER_CUSTOM_IMAGE="${RUNNER_CUSTOM_IMAGE:-qc-actions-runner:v0.0.1}"
-RUNNER_NAME_PREFIX="${RUNNER_NAME_PREFIX:-$(hostname)}-"
+# 容器名前缀：未显式设置时自动拼入 ORG/REPO，避免同一主机多副本时容器重名
+# 组织级默认：<hostname>-<org>-  仓库级默认：<hostname>-<org>-<repo>-
+if [[ -z "${RUNNER_NAME_PREFIX:-}" ]]; then
+  if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
+    RUNNER_NAME_PREFIX="$(hostname)-${ORG}-${REPO}-"
+  elif [[ -n "${ORG:-}" ]]; then
+    RUNNER_NAME_PREFIX="$(hostname)-${ORG}-"
+  else
+    RUNNER_NAME_PREFIX="$(hostname)-"
+  fi
+else
+  # 用户显式设置了 RUNNER_NAME_PREFIX；确保以 - 结尾
+  [[ "$RUNNER_NAME_PREFIX" == *- ]] || RUNNER_NAME_PREFIX="${RUNNER_NAME_PREFIX}-"
+fi
 RUNNER_GROUP="${RUNNER_GROUP:-Default}"
 RUNNER_WORKDIR="${RUNNER_WORKDIR:-}"
 RUNNER_LABELS="${RUNNER_LABELS:-intel}"
 RUNNER_BOARD="2"
 DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
-# 多组织共享硬件锁：设置后板子 runner 将使用 runner-wrapper，并挂载锁目录
-# 可为每块板子设不同 ID（如 RUNNER_RESOURCE_ID_PHYTIUMPI、RUNNER_RESOURCE_ID_ROC_RK3568_PC），不同板子 job 并行
+# 多组织共享硬件锁：板子 runner 使用 runner-wrapper 时按锁 ID 串行。每块板子「有定义用定义的，否则用该板子默认值」，不再回退到全局 RUNNER_RESOURCE_ID，避免所有板子共一把锁导致无法并行
 RUNNER_RESOURCE_ID="${RUNNER_RESOURCE_ID:-}"
-RUNNER_RESOURCE_ID_PHYTIUMPI="${RUNNER_RESOURCE_ID_PHYTIUMPI:-${RUNNER_RESOURCE_ID}}"
-RUNNER_RESOURCE_ID_ROC_RK3568_PC="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-${RUNNER_RESOURCE_ID}}"
+# 板子级：未设置时用本板默认值（同类型板串行、不同类型板并行）；多组织共享同一块板时显式设为相同 ID 即可
+RUNNER_RESOURCE_ID_PHYTIUMPI="${RUNNER_RESOURCE_ID_PHYTIUMPI:-board-phytiumpi}"
+RUNNER_RESOURCE_ID_ROC_RK3568_PC="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-board-roc-rk3568-pc}"
 RUNNER_LOCK_DIR="${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
 RUNNER_LOCK_HOST_PATH="${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}"
 COMPOSE_FILE="docker-compose.yml"
@@ -76,12 +89,12 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "GH_PAT" "Classic PAT (requires admin:org), used for org API and registration token"
   printf "  %-${KEYW}s %s\n" "ORG" "Organization name or user name (required)"
   printf "  %-${KEYW}s %s\n" "REPO" "Optional repository name (when set, operate on repo-scoped runners under ORG/REPO instead of organization-wide runners)"
-  printf "  %-${KEYW}s %s\n" "RUNNER_NAME_PREFIX" "Runner name prefix"
+  printf "  %-${KEYW}s %s\n" "RUNNER_NAME_PREFIX" "Container name prefix (default: <hostname>-<org>[-<repo>]-); auto includes ORG/REPO to avoid name conflicts"
   printf "  %-${KEYW}s %s\n" "RUNNER_IMAGE" "Image used for compose generation (default ghcr.io/actions/actions-runner:latest)"
   printf "  %-${KEYW}s %s\n" "RUNNER_CUSTOM_IMAGE" "Image tag used for auto-build (can override)"
-  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID" "Default lock resource ID for all board runners; same ID = serial, different = parallel"
-  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_PHYTIUMPI" "Override for phytiumpi board (default: RUNNER_RESOURCE_ID)"
-  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_ROC_RK3568_PC" "Override for roc-rk3568-pc board (default: RUNNER_RESOURCE_ID)"
+  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID" "Optional global lock ID (e.g. for manual wrapper config); board vars take per-board default if unset"
+  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_PHYTIUMPI" "Lock ID for phytiumpi board (default: board-phytiumpi); same ID = serial across runners"
+  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_ROC_RK3568_PC" "Lock ID for roc-rk3568-pc board (default: board-roc-rk3568-pc); same ID = serial"
   printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_DIR" "Lock dir in container (default /tmp/github-runner-locks)"
   printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_HOST_PATH" "Lock dir on host for bind mount (default /tmp/github-runner-locks)"
   echo
@@ -399,9 +412,9 @@ shell_get_compose_file() {
 
 shell_generate_compose_file() {
     local general_count=$1
-    # 每块板子可单独设 RUNNER_RESOURCE_ID，未设则用全局 RUNNER_RESOURCE_ID；不同板子不同 ID 则并行
-    local res_phytiumpi="${RUNNER_RESOURCE_ID_PHYTIUMPI:-}"
-    local res_roc="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}"
+    # 板子级：有定义用定义的，否则用该板默认值；不同板默认不同 ID 可并行，多组织共享同一块板时显式设相同 ID
+    local res_phytiumpi="${RUNNER_RESOURCE_ID_PHYTIUMPI:-board-phytiumpi}"
+    local res_roc="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-board-roc-rk3568-pc}"
     local runner_entrypoint_phytiumpi="exec /home/runner/run.sh"
     local runner_entrypoint_roc="exec /home/runner/run.sh"
     [[ -n "$res_phytiumpi" ]] && runner_entrypoint_phytiumpi="exec /home/runner/runner-wrapper/runner-wrapper.sh"
@@ -876,8 +889,9 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             
             # 计算通用 runner 的数量
             if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
-                # 如果启用了板子 runner，则减去 RUNNER_BOARD 个板子 runner
+                # 如果启用了板子 runner，则减去 RUNNER_BOARD 个板子 runner，且不少于 0
                 generic_count=$(( cont_count - RUNNER_BOARD ))
+                [[ "$generic_count" -lt 0 ]] && generic_count=0
             else
                 # 如果没有启用板子 runner，则所有容器都是通用 runner
                 generic_count=$cont_count

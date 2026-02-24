@@ -59,6 +59,7 @@ cp .env.example .env
 
 ## Notes
 
+- **Container naming**: The default prefix auto-includes `ORG` (and `REPO` if set), e.g. `<hostname>-<org>-runner-N` or `<hostname>-<org>-<repo>-runner-N`, to avoid name collisions when multiple orgs/repos run on the same host. Override with `RUNNER_NAME_PREFIX`.
 - BOARD_RUNNERS format: `name:label1[,label2];name2:label1`. For names listed in `BOARD_RUNNERS`, the script will use only the labels specified there and will not append the global `RUNNER_LABELS`.
 - If a `Dockerfile` exists in the repository root, the script will compute a hash of its contents and rebuild the custom runner image when that hash changes.
 - Registration tokens are cached in `.reg_token.cache`. Control cache TTL with `REG_TOKEN_CACHE_TTL` (seconds).
@@ -67,13 +68,13 @@ cp .env.example .env
 
 When multiple GitHub organizations share the same hardware test environment (serial ports, power control, etc.), concurrent CI runs can cause resource conflicts. Use the **runner-wrapper** to serialize execution via file locks.
 
-**Registration model**: GitHub’s runner model allows each self-hosted runner to register to only one organization or repository, not multiple orgs. In this repo, the target is set by `ORG`/`REPO` in `.env`. For multi-org shared hardware, use one `.env` and one set of runner instances per organization; multiple sets share the same `RUNNER_RESOURCE_ID` and lock directory so jobs run serially—not one runner registered to multiple orgs.
+**Registration model**: GitHub’s runner model allows each self-hosted runner to register to only one organization or repository, not multiple orgs. In this repo, the target is set by `ORG`/`REPO` in `.env`. For multi-org shared hardware, use one `.env` and one set of runner instances per organization; multiple sets use the same board-level lock ID (e.g. `RUNNER_RESOURCE_ID_PHYTIUMPI`) and shared lock directory so jobs run serially—not one runner registered to multiple orgs.
 
 ### Quick setup
 
-When using **runner.sh** to generate compose, set `RUNNER_RESOURCE_ID` in `.env` (e.g. `board-phytiumpi`) so board runners use the wrapper and lock directory automatically. For manual or non–runner.sh setups:
+When using **runner.sh** to generate compose, board runners use the wrapper and lock directory by default. Lock ID is “use the board-specific env if set, otherwise the per-board default” (phytiumpi: `board-phytiumpi`, roc-rk3568-pc: `board-roc-rk3568-pc`), with no fallback to a global `RUNNER_RESOURCE_ID`, so different boards can run in parallel. For multi-org shared hardware, set the same board ID in `.env` (e.g. `RUNNER_RESOURCE_ID_PHYTIUMPI=board-phytiumpi`). For manual or non–runner.sh setups:
 
-1. Set `RUNNER_RESOURCE_ID` to the same value for all runners that share hardware (e.g. `board-phytiumpi`).
+1. Set the same board-level variable for all runners that share that board (e.g. `RUNNER_RESOURCE_ID_PHYTIUMPI=board-phytiumpi`).
 2. Mount a shared lock directory: `-v /tmp/github-runner-locks:/tmp/github-runner-locks`
 3. Replace the container command with the wrapper:
 
@@ -86,7 +87,7 @@ volumes:
   - /tmp/github-runner-locks:/tmp/github-runner-locks
 ```
 
-**Performance**: Serialization is required by hardware (one board runs one job at a time). This setup turns chaotic contention into an ordered queue and does not reduce throughput. To increase throughput, set a different `RUNNER_RESOURCE_ID` per board (e.g. `RUNNER_RESOURCE_ID_PHYTIUMPI`, `RUNNER_RESOURCE_ID_ROC_RK3568_PC`); jobs on different boards then run in parallel and throughput scales linearly with the number of boards.
+**Performance**: Serialization is required by hardware (one board runs one job at a time). This setup turns chaotic contention into an ordered queue and does not reduce throughput. By default each board type uses its own lock ID, so jobs on different boards run in parallel; for multi-org shared hardware, set the same `RUNNER_RESOURCE_ID_*` for that board so jobs serialize.
 
 See [runner-wrapper/README.md](runner-wrapper/README.md) for details. Reference: [Discussion #341](https://github.com/orgs/arceos-hypervisor/discussions/341).
 
