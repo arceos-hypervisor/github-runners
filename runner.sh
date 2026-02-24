@@ -288,9 +288,21 @@ shell_get_reg_token() {
     local now ts cached_token
     now=$(date +%s)
 
-    if [[ -f "$REG_TOKEN_CACHE_FILE" ]]; then
-        ts=$(head -n1 "$REG_TOKEN_CACHE_FILE" 2>/dev/null || true)
-        cached_token=$(sed -n '2p' "$REG_TOKEN_CACHE_FILE" 2>/dev/null || true)
+    # 先确保 ORG 已设置，以便构建正确的缓存文件名
+    shell_get_org_and_pat
+
+    # 根据组织/仓库构建缓存文件名，支持多组织场景
+    local cache_suffix=""
+    if [[ -n "${REPO:-}" ]]; then
+        cache_suffix=".${ORG}.${REPO}"
+    elif [[ -n "${ORG:-}" ]]; then
+        cache_suffix=".${ORG}"
+    fi
+    local token_cache_file="${REG_TOKEN_CACHE_FILE}${cache_suffix}"
+
+    if [[ -f "$token_cache_file" ]]; then
+        ts=$(head -n1 "$token_cache_file" 2>/dev/null || true)
+        cached_token=$(sed -n '2p' "$token_cache_file" 2>/dev/null || true)
         if [[ -n "$ts" && -n "$cached_token" && "$ts" =~ ^[0-9]+$ ]]; then
             if (( now - ts < REG_TOKEN_CACHE_TTL )); then
                 REG_TOKEN="$cached_token"
@@ -301,19 +313,18 @@ shell_get_reg_token() {
     fi
 
     if [[ -n "${REG_TOKEN:-}" && "${REG_TOKEN:-}" != "null" ]]; then
-        printf '%s\n%s\n' "$now" "$REG_TOKEN" > "$REG_TOKEN_CACHE_FILE"
+        printf '%s\n%s\n' "$now" "$REG_TOKEN" > "$token_cache_file"
         printf '%s\n' "$REG_TOKEN"
         return 0
     fi
 
-    shell_get_org_and_pat
-    shell_info "Requesting <${ORG:-${REPO}}> registration token..." >&2
+    shell_info "Requesting <${ORG}${REPO:+/}${REPO}> registration token..." >&2
     local new_token
     new_token="$(github_fetch_reg_token || true)"
     [[ -n "$new_token" && "$new_token" != "null" ]] || shell_die "Failed to fetch registration token!"
     REG_TOKEN="$new_token"
     export REG_TOKEN
-    printf '%s\n%s\n' "$now" "$REG_TOKEN" > "$REG_TOKEN_CACHE_FILE"
+    printf '%s\n%s\n' "$now" "$REG_TOKEN" > "$token_cache_file"
     # Keep compose file in sync when fetching a fresh token
     printf '%s\n' "$REG_TOKEN"
 }
