@@ -440,7 +440,7 @@ shell_generate_compose_file() {
         "  image: \"${RUNNER_IMAGE}\"" \
         "  restart: unless-stopped" \
         "  environment: &runner_env" \
-        "    RUNNER_ORG_URL: \"https://github.com/arceos-hypervisor\"" \
+        "    RUNNER_ORG_URL: \"https://github.com/${ORG}${REPO:+/}${REPO}\"" \
         "    RUNNER_TOKEN: \"${REG_TOKEN}\"" \
         "    RUNNER_GROUP: \"${RUNNER_GROUP}\"" \
         "    RUNNER_REMOVE_ON_STOP: \"false\"" \
