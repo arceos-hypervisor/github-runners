@@ -4,103 +4,127 @@ English | [中文](README_CN.md)
 
 ## Overview
 
-This repository provides scripts for creating, managing, and registering GitHub self-hosted runners using Docker containers. The main script, `runner.sh`, dynamically generates a `docker-compose.yml` and can build a custom runner image when a `Dockerfile` is present.
+This repository provides scripts and tools for creating, managing, and registering GitHub self-hosted runners in Docker containers. Unlike installing the [official GitHub self-hosted runner](https://github.com/actions/runner) directly on the host, this approach encapsulates runners in Docker containers with the following benefits:
 
-The toolkit supports both organization-scoped and repository-scoped runners. To target a specific repository, set the `REPO` variable in the environment (or via the interactive prompt).
+- **Environment Isolation**: Each runner runs in an isolated container, avoiding dependency conflicts
+- **Easy Management**: Batch management of multiple runner instances via Docker Compose
+- **Fast Deployment**: Supports custom images with pre-installed toolchains
+- **Multi-Org Support**: Multiple containers can run on the same host, registering to different organizations
 
 ## Features
 
-- Create and manage multiple runner containers using Docker Compose.
-- Support for organization-scoped and repository-scoped runners (controlled by `REPO`).
-- Per-instance labels via `BOARD_RUNNERS` (those instances will use only the labels defined in `BOARD_RUNNERS`).
-- Optional custom Docker image build when a `Dockerfile` is present; rebuilds are triggered when the Dockerfile changes.
-- Caches GitHub registration tokens in `.reg_token.cache` to reduce API calls (TTL configurable).
-- Common lifecycle commands: `init`, `register`, `start`, `stop`, `restart`, `logs`, `list`, `rm`, `purge`.
+- Batch management of multiple runner containers using Docker Compose
+- Support for organization-level and repository-level runners (controlled by `REPO` variable)
+- Per-instance custom labels via `BOARD_RUNNERS`
+- Automatic custom image rebuild when `Dockerfile` changes
+- Cached registration tokens to reduce GitHub API requests
+- Full lifecycle commands: `init`, `register`, `start`, `stop`, `restart`, `logs`, `list`, `rm`, `purge`
 
-## Prerequisites
+## Usage
 
-- Docker and Docker Compose must be installed on the host. The scripts support both `docker compose` and legacy `docker-compose`.
-- A GitHub Personal Access Token (classic PAT) with the required permissions is needed (`GH_PAT`).
-- Organization-level operations typically need organization admin or appropriate permissions; repository-level operations need repository admin permissions.
+### Prerequisites
 
-## Quickstart
+- Docker and Docker Compose installed on the host
+- GitHub Classic Personal Access Token (`GH_PAT`) with appropriate permissions (org admin for organization-level, repo admin for repository-level)
 
-1. Make the script executable:
+### Quick Start
 
 ```bash
+# 1. Make the script executable
 chmod +x runner.sh
-```
 
-2. (Optional) Copy `.env.example` to `.env` and set `ORG`, `GH_PAT`, etc. If you skip this, the script will prompt for these on first run.
-
-```bash
+# 2. (Optional) Configure environment variables
 cp .env.example .env
-# Edit .env and set at least ORG and GH_PAT
-```
+# Edit .env, at minimum set ORG and GH_PAT
 
-3. Run initialization (generates compose, builds image if needed, and starts containers):
-
-```bash
+# 3. Generate and start runners
 ./runner.sh init [-n N]
 ```
 
-## Common Commands
+### Common Commands
 
-- `./runner.sh init [-n N]`: generate and start N runners.
-- `./runner.sh register [runner-<id> ...]`: register the specified runner containers with GitHub; with no arguments, attempts to register any unregistered instances found locally.
-- `./runner.sh start [runner-<id> ...]`: start containers; will attempt registration if a container is running but not registered.
-- `./runner.sh stop [runner-<id> ...]`: stop containers.
-- `./runner.sh restart [runner-<id> ...]`: restart containers.
-- `./runner.sh logs runner-<id>`: tail logs for the specified runner container.
-- `./runner.sh ps`: show generated compose services or fall back to `docker ps`.
-- `./runner.sh list`: show local container status and corresponding registration state on GitHub.
-- `./runner.sh rm|remove|delete [runner-<id> ...] [-y|--yes]`: unregister and remove containers and volumes; confirmation required unless `-y` is provided.
-- `./runner.sh purge [-y]`: remove generated files (such as `docker-compose.yml` and token caches) and containers; confirmation required unless `-y` is provided.
+| Command | Description |
+|---------|-------------|
+| `./runner.sh init [-n N]` | Generate and start N runners |
+| `./runner.sh register [runner-<id> ...]` | Register specified instances; without arguments, registers all unconfigured instances |
+| `./runner.sh start/stop/restart [runner-<id> ...]` | Start/stop/restart containers |
+| `./runner.sh logs runner-<id>` | View instance logs |
+| `./runner.sh ps` | Show container status |
+| `./runner.sh list` | Show local container status and GitHub registration status |
+| `./runner.sh rm [runner-<id> ...] [-y]` | Unregister and remove containers; `-y` skips confirmation |
+| `./runner.sh purge [-y]` | Remove containers and generated files (`docker-compose.yml`, caches, etc.) |
 
-## Notes
+> **Note**: The `init` command creates two hardware-based runners (phytiumpi and roc-rk3568-pc) by default. This behavior is not controlled by the `-n` parameter.
 
-- **Container naming**: The default prefix auto-includes `ORG` (and `REPO` if set), e.g. `<hostname>-<org>-runner-N` or `<hostname>-<org>-<repo>-runner-N`, to avoid name collisions when multiple orgs/repos run on the same host. Override with `RUNNER_NAME_PREFIX`.
-- BOARD_RUNNERS format: `name:label1[,label2];name2:label1`. For names listed in `BOARD_RUNNERS`, the script will use only the labels specified there and will not append the global `RUNNER_LABELS`.
-- If a `Dockerfile` exists in the repository root, the script will compute a hash of its contents and rebuild the custom runner image when that hash changes.
-- Registration tokens are cached in `.reg_token.cache`. Control cache TTL with `REG_TOKEN_CACHE_TTL` (seconds).
+## Configuration
 
-## Multi-org Shared Hardware
+### Container Naming
 
-When multiple GitHub organizations share the same hardware test environment (serial ports, power control, etc.), concurrent CI runs can cause resource conflicts. Use the **runner-wrapper** to serialize execution via file locks.
+The default prefix automatically includes `ORG` (and `REPO` if set), formatted as `<hostname>-<org>-runner-N` or `<hostname>-<org>-<repo>-runner-N` to avoid naming conflicts when multiple orgs/repos run on the same host. Override with `RUNNER_NAME_PREFIX`.
 
-**Registration model**: GitHub’s runner model allows each self-hosted runner to register to only one organization or repository, not multiple orgs. In this repo, the target is set by `ORG`/`REPO` in `.env`. For multi-org shared hardware, use one `.env` and one set of runner instances per organization; multiple sets use the same board-level lock ID (e.g. `RUNNER_RESOURCE_ID_PHYTIUMPI`) and shared lock directory so jobs run serially—not one runner registered to multiple orgs.
+### BOARD_RUNNERS Format
 
-### Quick setup
-
-When using **runner.sh** to generate compose, board runners use the wrapper and lock directory by default. Lock ID is “use the board-specific env if set, otherwise the per-board default” (phytiumpi: `board-phytiumpi`, roc-rk3568-pc: `board-roc-rk3568-pc`), with no fallback to a global `RUNNER_RESOURCE_ID`, so different boards can run in parallel. For multi-org shared hardware, set the same board ID in `.env` (e.g. `RUNNER_RESOURCE_ID_PHYTIUMPI=board-phytiumpi`). For manual or non–runner.sh setups:
-
-1. Set the same board-level variable for all runners that share that board (e.g. `RUNNER_RESOURCE_ID_PHYTIUMPI=board-phytiumpi`).
-2. Mount a shared lock directory: `-v /tmp/github-runner-locks:/tmp/github-runner-locks`
-3. Replace the container command with the wrapper:
-
-```yaml
-command: ["/home/runner/runner-wrapper/runner-wrapper.sh"]
-environment:
-  RUNNER_RESOURCE_ID: "board-phytiumpi"
-  RUNNER_SCRIPT: "/home/runner/run.sh"
-volumes:
-  - /tmp/github-runner-locks:/tmp/github-runner-locks
+```
+name:label1[,label2];name2:label1
 ```
 
-**Performance**: Serialization is required by hardware (one board runs one job at a time). This setup turns chaotic contention into an ordered queue and does not reduce throughput. By default each board type uses its own lock ID, so jobs on different boards run in parallel; for multi-org shared hardware, set the same `RUNNER_RESOURCE_ID_*` for that board so jobs serialize.
+Example: `phytiumpi:arm64,phytiumpi;roc-rk3568-pc:arm64,roc-rk3568-pc`
 
-See [runner-wrapper/README.md](runner-wrapper/README.md) for details. Reference: [Discussion #341](https://github.com/orgs/arceos-hypervisor/discussions/341).
+Board instances will only use labels defined in `BOARD_RUNNERS` and will not append global `RUNNER_LABELS`.
 
-## Development and Contributing
+### Other Settings
 
-Contributions are welcome. Suggested workflow:
+- **Custom Image**: If a `Dockerfile` exists, the script will rebuild `RUNNER_CUSTOM_IMAGE` based on hash changes
+- **Token Cache**: Registration tokens are cached in `.reg_token.cache`, configure TTL via `REG_TOKEN_CACHE_TTL` (seconds)
 
-1. Fork the repo and create a feature branch: `git checkout -b feat/your-change`.
-2. Make changes and validate script syntax: `bash -n runner.sh`.
-3. Open a pull request describing the change and how to test it.
+## Multi-Org Share
 
-Guidelines:
+This script enables running multiple Docker containers on the same host, each registered to different GitHub organizations. Even when these containers need to access the same physical hardware (e.g., development boards, serial ports, power control), CI resource conflicts are prevented.
 
-- Never commit files containing `GH_PAT` or other secrets.
-- If you add dependencies like `jq`, update the README and provide fallbacks where practical.
-- Try to keep the scripts compatible with POSIX-ish Bash and add tests where applicable.
+### Scenario
+
+This Docker-based approach runs an independent runner instance in each container:
+
+```
+Host A
+├── Container 1 (runner) → Registered to Org A
+├── Container 2 (runner) → Registered to Org B
+└── Physical hardware (e.g., phytiumpi board) ← Both containers may access
+```
+
+According to [GitHub's official design](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners), a runner process can only register to one target (repo/org/enterprise). However, with Docker, we can run multiple container instances on the same host, each registered to a different organization.
+
+When multiple containers need to access the same physical hardware, concurrent jobs can cause hardware conflicts (e.g., serial port contention, power state chaos) without coordination. We use `runner-wrapper`'s file lock mechanism to ensure only one job executes on the same hardware at a time.
+
+### Configuration
+
+When using environments generated by **runner.sh**, board runners have the wrapper enabled by default with the shared lock directory `/tmp/github-runner-locks` mounted. Board-level environment variables (e.g., `RUNNER_RESOURCE_ID_PHYTIUMPI`) take priority; otherwise, default values are used (phytiumpi: `board-phytiumpi`, roc-rk3568-pc: `board-roc-rk3568-pc`).
+
+To **share the same board across multiple organizations**, simply set the same lock ID for that board in each `.env` file. This ensures that even if runner containers from both organizations receive jobs simultaneously, they will queue via file locks to avoid hardware conflicts.
+
+```bash
+# Org A's .env
+RUNNER_RESOURCE_ID_PHYTIUMPI=board-phytiumpi
+
+# Org B's .env (same host, different directory)
+RUNNER_RESOURCE_ID_PHYTIUMPI=board-phytiumpi
+```
+
+**Note**: Serialization is a hardware limitation. This approach transforms "chaotic contention" into "ordered queuing" without reducing throughput. Different boards using their own lock IDs can run in parallel.See [runner-wrapper/README.md](runner-wrapper/README.md) for details. Reference: [Discussion #341](https://github.com/orgs/arceos-hypervisor/discussions/341).
+
+## Contributing
+
+```bash
+# 1. Fork and create a branch
+git checkout -b feat/my-change
+
+# 2. Make changes and validate syntax
+bash -n runner.sh
+
+# 3. Submit a PR describing the changes and test steps
+```
+
+Notes:
+- Do not commit files containing `GH_PAT` or other sensitive information
+- Document new dependencies in README and provide fallback options where possible
+- Keep scripts compatible with Bash
