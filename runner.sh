@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 忽略多组织部署时的 orphan 容器警告（同一主机运行多个组织的 runner 是正常场景）
+export COMPOSE_IGNORE_ORPHANS=1
+
 ENV_FILE="${ENV_FILE:-.env}"
 
 # ------------------------------- load .env file -------------------------------
@@ -13,8 +16,6 @@ fi
 ORG="${ORG:-}"
 GH_PAT="${GH_PAT:-}"
 REPO="${REPO:-}"
-REG_TOKEN_CACHE_FILE="${REG_TOKEN_CACHE_FILE:-.reg_token.cache}"
-REG_TOKEN_CACHE_TTL="${REG_TOKEN_CACHE_TTL:-300}" # seconds, default 5 minutes
 
 # Runner container related parameters
 RUNNER_IMAGE="${RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}"
@@ -38,15 +39,46 @@ RUNNER_WORKDIR="${RUNNER_WORKDIR:-}"
 RUNNER_LABELS="${RUNNER_LABELS:-intel}"
 RUNNER_BOARD="2"
 DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
-# 多组织共享硬件锁：板子 runner 使用 runner-wrapper 时按锁 ID 串行。每块板子「有定义用定义的，否则用该板子默认值」，不再回退到全局 RUNNER_RESOURCE_ID，避免所有板子共一把锁导致无法并行
-RUNNER_RESOURCE_ID="${RUNNER_RESOURCE_ID:-}"
+# 普通 runners 的全局资源 ID：可选，设置后普通 runners 会通过 flock 串行执行以避免硬件竞争。多组织部署时推荐设置为相同值（如 "general-runners"）
+RUNNER_RESOURCE_ID_GENERAL="${RUNNER_RESOURCE_ID_GENERAL:-}"
 # 板子级：未设置时用本板默认值（同类型板串行、不同类型板并行）；多组织共享同一块板时显式设为相同 ID 即可
-RUNNER_RESOURCE_ID_PHYTIUMPI="${RUNNER_RESOURCE_ID_PHYTIUMPI:-board-phytiumpi}"
-RUNNER_RESOURCE_ID_ROC_RK3568_PC="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-board-roc-rk3568-pc}"
+RUNNER_RESOURCE_ID_PHYTIUMPI="${RUNNER_RESOURCE_ID_PHYTIUMPI:-}"
+RUNNER_RESOURCE_ID_ROC_RK3568_PC="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}"
 RUNNER_LOCK_DIR="${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
 RUNNER_LOCK_HOST_PATH="${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}"
-COMPOSE_FILE="docker-compose.yml"
-DOCKERFILE_HASH_FILE="${DOCKERFILE_HASH_FILE:-.dockerfile.sha256}"
+# Compose 文件名：未显式设置时自动拼入 ORG/REPO，避免同一主机多组织时文件冲突
+# 组织级默认：docker-compose.<org>.yml  仓库级默认：docker-compose.<org>.<repo>.yml
+if [[ -z "${COMPOSE_FILE:-}" ]]; then
+  if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
+    COMPOSE_FILE="docker-compose.${ORG}.${REPO}.yml"
+  elif [[ -n "${ORG:-}" ]]; then
+    COMPOSE_FILE="docker-compose.${ORG}.yml"
+  else
+    COMPOSE_FILE="docker-compose.yml"
+  fi
+fi
+# Dockerfile hash 文件名：同样根据 ORG/REPO 区分，避免多组织时 hash 冲突
+if [[ -z "${DOCKERFILE_HASH_FILE:-}" ]]; then
+  if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
+    DOCKERFILE_HASH_FILE=".dockerfile.${ORG}.${REPO}.sha256"
+  elif [[ -n "${ORG:-}" ]]; then
+    DOCKERFILE_HASH_FILE=".dockerfile.${ORG}.sha256"
+  else
+    DOCKERFILE_HASH_FILE=".dockerfile.sha256"
+  fi
+fi
+# REG_TOKEN_CACHE_FILE 文件名：未显式设置时自动拼入 ORG/REPO，避免同一主机多组织时文件冲突
+# 组织级默认：.reg_token.cache.<org>  仓库级默认：.reg_token.cache.<org>.<repo>
+if [[ -z "${REG_TOKEN_CACHE_FILE:-}" ]]; then
+  if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
+    REG_TOKEN_CACHE_FILE=".reg_token.cache.${ORG}.${REPO}"
+  elif [[ -n "${ORG:-}" ]]; then
+    REG_TOKEN_CACHE_FILE=".reg_token.cache.${ORG}"
+  else
+    REG_TOKEN_CACHE_FILE=".reg_token.cache"
+  fi
+fi
+REG_TOKEN_CACHE_TTL="${REG_TOKEN_CACHE_TTL:-300}" # seconds, default 5 minutes
 
 # ------------------------------- Helpers -------------------------------
 shell_usage() {
@@ -92,7 +124,7 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "RUNNER_NAME_PREFIX" "Container name prefix (default: <hostname>-<org>[-<repo>]-); auto includes ORG/REPO to avoid name conflicts"
   printf "  %-${KEYW}s %s\n" "RUNNER_IMAGE" "Image used for compose generation (default ghcr.io/actions/actions-runner:latest)"
   printf "  %-${KEYW}s %s\n" "RUNNER_CUSTOM_IMAGE" "Image tag used for auto-build (can override)"
-  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID" "Optional global lock ID (e.g. for manual wrapper config); board vars take per-board default if unset"
+  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_GENERAL" "Lock ID for generic runners (optional); prevents hardware contention in multi-org deployments"
   printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_PHYTIUMPI" "Lock ID for phytiumpi board (default: board-phytiumpi); same ID = serial across runners"
   printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_ROC_RK3568_PC" "Lock ID for roc-rk3568-pc board (default: board-roc-rk3568-pc); same ID = serial"
   printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_DIR" "Lock dir in container (default /tmp/github-runner-locks)"
@@ -102,7 +134,7 @@ shell_usage() {
 
   echo
   echo "Tips:"
-  echo "- docker-compose.yml must exist. The script will not generate or modify it."
+  echo "- Compose file is auto-generated per ORG/REPO (e.g., docker-compose.<org>.yml)"
   echo "- Re-start/up will reuse existing volumes; Runner configuration and tool caches will not be lost."
 }
 
@@ -288,21 +320,9 @@ shell_get_reg_token() {
     local now ts cached_token
     now=$(date +%s)
 
-    # 先确保 ORG 已设置，以便构建正确的缓存文件名
-    shell_get_org_and_pat
-
-    # 根据组织/仓库构建缓存文件名，支持多组织场景
-    local cache_suffix=""
-    if [[ -n "${REPO:-}" ]]; then
-        cache_suffix=".${ORG}.${REPO}"
-    elif [[ -n "${ORG:-}" ]]; then
-        cache_suffix=".${ORG}"
-    fi
-    local token_cache_file="${REG_TOKEN_CACHE_FILE}${cache_suffix}"
-
-    if [[ -f "$token_cache_file" ]]; then
-        ts=$(head -n1 "$token_cache_file" 2>/dev/null || true)
-        cached_token=$(sed -n '2p' "$token_cache_file" 2>/dev/null || true)
+    if [[ -f "$REG_TOKEN_CACHE_FILE" ]]; then
+        ts=$(head -n1 "$REG_TOKEN_CACHE_FILE" 2>/dev/null || true)
+        cached_token=$(sed -n '2p' "$REG_TOKEN_CACHE_FILE" 2>/dev/null || true)
         if [[ -n "$ts" && -n "$cached_token" && "$ts" =~ ^[0-9]+$ ]]; then
             if (( now - ts < REG_TOKEN_CACHE_TTL )); then
                 REG_TOKEN="$cached_token"
@@ -313,18 +333,19 @@ shell_get_reg_token() {
     fi
 
     if [[ -n "${REG_TOKEN:-}" && "${REG_TOKEN:-}" != "null" ]]; then
-        printf '%s\n%s\n' "$now" "$REG_TOKEN" > "$token_cache_file"
+        printf '%s\n%s\n' "$now" "$REG_TOKEN" > "$REG_TOKEN_CACHE_FILE"
         printf '%s\n' "$REG_TOKEN"
         return 0
     fi
 
-    shell_info "Requesting <${ORG}${REPO:+/}${REPO}> registration token..." >&2
+    shell_get_org_and_pat
+    shell_info "Requesting <${ORG:-${REPO}}> registration token..." >&2
     local new_token
     new_token="$(github_fetch_reg_token || true)"
     [[ -n "$new_token" && "$new_token" != "null" ]] || shell_die "Failed to fetch registration token!"
     REG_TOKEN="$new_token"
     export REG_TOKEN
-    printf '%s\n%s\n' "$now" "$REG_TOKEN" > "$token_cache_file"
+    printf '%s\n%s\n' "$now" "$REG_TOKEN" > "$REG_TOKEN_CACHE_FILE"
     # Keep compose file in sync when fetching a fresh token
     printf '%s\n' "$REG_TOKEN"
 }
@@ -423,21 +444,61 @@ shell_get_compose_file() {
 
 shell_generate_compose_file() {
     local general_count=$1
-    # 板子级：有定义用定义的，否则用该板默认值；不同板默认不同 ID 可并行，多组织共享同一块板时显式设相同 ID
-    local res_phytiumpi="${RUNNER_RESOURCE_ID_PHYTIUMPI:-board-phytiumpi}"
-    local res_roc="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-board-roc-rk3568-pc}"
-    local runner_entrypoint_phytiumpi="exec /home/runner/run.sh"
-    local runner_entrypoint_roc="exec /home/runner/run.sh"
-    [[ -n "$res_phytiumpi" ]] && runner_entrypoint_phytiumpi="exec /home/runner/runner-wrapper/runner-wrapper.sh"
-    [[ -n "$res_roc" ]] && runner_entrypoint_roc="exec /home/runner/runner-wrapper/runner-wrapper.sh"
+    # ════════════════════════════════════════════════════════════════
+    # 第一步：为三种 runner 类型定义资源 ID
+    # ════════════════════════════════════════════════════════════════
+    # 硬件板 phytiumpi - 总是启用文件锁
+    local res_phytiumpi="${RUNNER_RESOURCE_ID_PHYTIUMPI:-}"
+    # 硬件板 roc - 总是启用文件锁
+    local res_roc="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}"
+    # 普通 runners（可选）- 用户可选择启用文件锁，默认不启用（向后兼容）
+    local res_general="${RUNNER_RESOURCE_ID_GENERAL:-}"
+
+    # ════════════════════════════════════════════════════════════════
+    # 第二步：三种 runner 类型的 entrypoint 配置
+    # ════════════════════════════════════════════════════════════════
+    # 设计说明：若设置了资源 ID（RUNNER_RESOURCE_ID_*），所有 runner 类型都改用
+    #   runner-wrapper.sh 来管理文件锁——包括普通 runners
+    # 默认：所有 runner 类型都使用 /home/runner/run.sh（不经过 runner-wrapper）
+    local runner_entrypoint_phytiumpi="/home/runner/run.sh"
+    local runner_entrypoint_roc="/home/runner/run.sh"
+    local runner_entrypoint_general="/home/runner/run.sh"
+    # 若设置了资源 ID，则改用 runner-wrapper 来处理文件锁（适用于所有 runner 类型）
+    [[ -n "$res_phytiumpi" ]] && runner_entrypoint_phytiumpi="/home/runner/runner-wrapper/runner-wrapper.sh"
+    [[ -n "$res_roc" ]] && runner_entrypoint_roc="/home/runner/runner-wrapper/runner-wrapper.sh"
+    [[ -n "$res_general" ]] && runner_entrypoint_general="/home/runner/runner-wrapper/runner-wrapper.sh"
+
+    # ════════════════════════════════════════════════════════════════
+    # 第三步：为三种 runner 类型准备额外的环境变量数组
+    # ════════════════════════════════════════════════════════════════
+    # 重复模式说明：以下三部分几乎完全相同，都是：
+    #   1. 定义空数组：extra_env_X=()
+    #   2. 如果有资源 ID，则添加三个环境变量：
+    #      - RUNNER_RESOURCE_ID: 用于锁机制
+    #      - RUNNER_SCRIPT: 给 runner-wrapper 使用的脚本路径
+    #      - RUNNER_LOCK_DIR: 容器内锁文件目录
+    # 原因：三种 runner 都可能需要文件锁机制，但都是可选的
     local extra_env_phytiumpi=()
     local extra_env_roc=()
+    local extra_env_general=()
+    # 只有设置了相应的资源 ID，才为该类型 runner 添加锁相关环境变量
     [[ -n "$res_phytiumpi" ]] && extra_env_phytiumpi=("      RUNNER_RESOURCE_ID: \"$res_phytiumpi\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
     [[ -n "$res_roc" ]] && extra_env_roc=("      RUNNER_RESOURCE_ID: \"$res_roc\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
+    [[ -n "$res_general" ]] && extra_env_general=("      RUNNER_RESOURCE_ID: \"$res_general\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
+
+    # ════════════════════════════════════════════════════════════════
+    # 第四步：为三种 runner 类型准备卷挂载配置
+    # ════════════════════════════════════════════════════════════════
+    # 重复模式说明：以下三部分完全相同（除变量名），都实现：
+    #   如果设置了资源 ID，则挂载主机的锁文件目录到容器内
+    # 原因：文件锁机制需要在主机和容器间共享锁文件
     local extra_vol_phytiumpi=""
     local extra_vol_roc=""
+    local extra_vol_general=""
+    # 只有设置了相应的资源 ID，才为该类型 runner 挂载锁文件目录
     [[ -n "$res_phytiumpi" ]] && extra_vol_phytiumpi="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
     [[ -n "$res_roc" ]] && extra_vol_roc="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
+    [[ -n "$res_general" ]] && extra_vol_general="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
 
     # 使用 printf 输出文件头
     printf '%s\n' \
@@ -463,16 +524,16 @@ shell_generate_compose_file() {
         "  network_mode: host" \
         "  privileged: true" \
         "" \
-        "services:" > docker-compose.yml
+        "services:" > "${COMPOSE_FILE}"
 
     # 生成普通 runners
-    echo "  # 普通 runners" >> docker-compose.yml
+    echo "  # 普通 runners" >> ${COMPOSE_FILE}
     for i in $(seq 1 $general_count); do
         printf '%s\n' \
             "  ${RUNNER_NAME_PREFIX}runner-${i}:" \
             "    <<: *runner_base" \
             "    container_name: \"${RUNNER_NAME_PREFIX}runner-${i}\"" \
-            "    command: [\"/home/runner/run.sh\"]" \
+            "    command: [\"${runner_entrypoint_general}\"]" \
             "    devices:" \
             "      - /dev/loop-control:/dev/loop-control" \
             "      - /dev/loop0:/dev/loop0" \
@@ -486,16 +547,18 @@ shell_generate_compose_file() {
             "      <<: *runner_env" \
             "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-${i}\"" \
             "      RUNNER_LABELS: \"${RUNNER_LABELS}\"" \
+            "${extra_env_general[@]}" \
             "    volumes:" \
             "      - ${RUNNER_NAME_PREFIX}runner-${i}-data:/home/runner" \
             "      - ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules:/etc/udev/rules.d" \
-            "" >> docker-compose.yml
+            "$extra_vol_general" \
+            "" >> "${COMPOSE_FILE}"
     done
 
     # 只有当 RUNNER_BOARD 大于 0 时才生成板子 runners
     if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
         # 生成板子 runners
-        echo "  # 板子专用 runners" >> docker-compose.yml
+        echo "  # 板子专用 runners" >> "${COMPOSE_FILE}"
         
         # phytiumpi 板子配置
         printf '%s\n' \
@@ -550,7 +613,7 @@ shell_generate_compose_file() {
             "$extra_vol_phytiumpi" \
             "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-data:/home/runner" \
             "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules:/etc/udev/rules.d" \
-            "" >> docker-compose.yml
+            "" >> "${COMPOSE_FILE}"
         
         # roc-rk3568-pc 板子配置
         printf '%s\n' \
@@ -601,18 +664,18 @@ shell_generate_compose_file() {
             "$extra_vol_roc" \
             "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data:/home/runner" \
             "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:/etc/udev/rules.d" \
-            "" >> docker-compose.yml
+            "" >> "${COMPOSE_FILE}"
     fi
 
     # 生成 volumes
-    echo "volumes:" >> docker-compose.yml
+    echo "volumes:" >> ${COMPOSE_FILE}
     
     for i in $(seq 1 $general_count); do
         printf '%s\n' \
             "  ${RUNNER_NAME_PREFIX}runner-${i}-data:" \
             "    name: ${RUNNER_NAME_PREFIX}runner-${i}-data" \
             "  ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules:" \
-            "    name: ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules" >> docker-compose.yml
+            "    name: ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules" >> "${COMPOSE_FILE}"
     done
     
     # 只有当 RUNNER_BOARD 大于 0 时才生成板子相关的 volumes
@@ -622,14 +685,14 @@ shell_generate_compose_file() {
             "  ${RUNNER_NAME_PREFIX}runner-phytiumpi-data:" \
             "    name: ${RUNNER_NAME_PREFIX}runner-phytiumpi-data" \
             "  ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules:" \
-            "    name: ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules" >> docker-compose.yml
+            "    name: ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules" >> "${COMPOSE_FILE}"
         
         # 为 roc-rk3568-pc 板子生成 volumes
         printf '%s\n' \
             "  ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data:" \
             "    name: ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data" \
             "  ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:" \
-            "    name: ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules" >> docker-compose.yml
+            "    name: ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules" >> "${COMPOSE_FILE}"
     fi
 }
 
@@ -1092,9 +1155,10 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 shell_delete_all_execute "Confirm unregister of all Runners, delete all containers and volumes, and remove all generated files? [y / N] " || { echo "Operation cancelled!"; exit 0; }
             fi
             for f in \
-                "${REG_TOKEN_CACHE_FILE}" \
+                "${REG_TOKEN_CACHE_FILE}"* \
                 "${DOCKERFILE_HASH_FILE}" \
-                "$ENV_FILE"; do
+                "$ENV_FILE" \
+                "$COMPOSE_FILE"; do
                 if [[ -f "$f" ]]; then
                     shell_info "Removing file $f"
                     rm -f "$f" || true
