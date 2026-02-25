@@ -211,6 +211,53 @@ shell_get_org_and_pat() {
 
     export ORG GH_PAT REPO
 
+    # Recalculate RUNNER_NAME_PREFIX if it was auto-generated (not explicitly set by user)
+    # Same logic as COMPOSE_FILE etc.: check if empty or equals default value (hostname only)
+    local default_prefix
+    default_prefix="$(hostname)-"
+    if [[ -z "${RUNNER_NAME_PREFIX:-}" ]] || [[ "$RUNNER_NAME_PREFIX" == "$default_prefix" ]]; then
+        if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
+            RUNNER_NAME_PREFIX="$(hostname)-${ORG}-${REPO}-"
+        elif [[ -n "${ORG:-}" ]]; then
+            RUNNER_NAME_PREFIX="$(hostname)-${ORG}-"
+        else
+            RUNNER_NAME_PREFIX="$default_prefix"
+        fi
+        export RUNNER_NAME_PREFIX
+    fi
+
+    # Recalculate file paths based on newly obtained ORG/REPO
+    if [[ -z "${COMPOSE_FILE:-}" ]] || [[ "$COMPOSE_FILE" == "docker-compose.yml" ]]; then
+        if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
+            COMPOSE_FILE="docker-compose.${ORG}.${REPO}.yml"
+        elif [[ -n "${ORG:-}" ]]; then
+            COMPOSE_FILE="docker-compose.${ORG}.yml"
+        else
+            COMPOSE_FILE="docker-compose.yml"
+        fi
+        export COMPOSE_FILE
+    fi
+    if [[ -z "${DOCKERFILE_HASH_FILE:-}" ]] || [[ "$DOCKERFILE_HASH_FILE" == ".dockerfile.sha256" ]]; then
+        if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
+            DOCKERFILE_HASH_FILE=".dockerfile.${ORG}.${REPO}.sha256"
+        elif [[ -n "${ORG:-}" ]]; then
+            DOCKERFILE_HASH_FILE=".dockerfile.${ORG}.sha256"
+        else
+            DOCKERFILE_HASH_FILE=".dockerfile.sha256"
+        fi
+        export DOCKERFILE_HASH_FILE
+    fi
+    if [[ -z "${REG_TOKEN_CACHE_FILE:-}" ]] || [[ "$REG_TOKEN_CACHE_FILE" == ".reg_token.cache" ]]; then
+        if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
+            REG_TOKEN_CACHE_FILE=".reg_token.cache.${ORG}.${REPO}"
+        elif [[ -n "${ORG:-}" ]]; then
+            REG_TOKEN_CACHE_FILE=".reg_token.cache.${ORG}"
+        else
+            REG_TOKEN_CACHE_FILE=".reg_token.cache"
+        fi
+        export REG_TOKEN_CACHE_FILE
+    fi
+
     # Persist to .env (ENV_FILE) if values were entered interactively
     if [[ $wrote_env -eq 1 ]]; then
         local env_file="$ENV_FILE" tmp
@@ -930,7 +977,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             RUNNER_IMAGE="$(shell_prepare_runner_image)";
 
             if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
-                shell_info "Generating $COMPOSE_FILE with $count generic runners and board-specific runners."
+                shell_info "Generating $COMPOSE_FILE with $count generic runners and ${RUNNER_BOARD} board-specific runners."
             else
                 shell_info "Generating $COMPOSE_FILE with $count generic runners."
             fi
@@ -958,7 +1005,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 generic_count=$cont_count
             fi
             if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
-                shell_info "Regenerating $COMPOSE_FILE with ${generic_count} existing runners and board-specific runners."
+                shell_info "Regenerating $COMPOSE_FILE with ${generic_count} existing runners and ${RUNNER_BOARD} board-specific runners."
             else
                 shell_info "Regenerating $COMPOSE_FILE with ${generic_count} existing runners."
             fi
