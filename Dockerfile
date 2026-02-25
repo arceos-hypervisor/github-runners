@@ -56,6 +56,7 @@ RUN apt-get update \
        python3-tomli \
        python3-sphinx \
        ninja-build \
+       libslirp0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Build and install QEMU 10.1.2 from source 
