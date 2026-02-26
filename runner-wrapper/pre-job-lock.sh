@@ -10,26 +10,50 @@ set -e
 
 LOCK_DIR="${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
 RESOURCE_ID="${RUNNER_RESOURCE_ID:-default-hardware}"
+RUNNER_NAME_SAFE="${RUNNER_NAME:-unknown-runner}"
+RUN_ID_SAFE="${GITHUB_RUN_ID:-unknown}"
+RUN_ATTEMPT_SAFE="${GITHUB_RUN_ATTEMPT:-unknown}"
+RUN_KEY="${RUNNER_NAME_SAFE}.${RUN_ID_SAFE}.${RUN_ATTEMPT_SAFE}"
 LOCK_FILE="${LOCK_DIR}/${RESOURCE_ID}.lock"
-RELEASE_FILE="${LOCK_DIR}/${RESOURCE_ID}.release"
+RELEASE_FILE="${LOCK_DIR}/${RESOURCE_ID}.${RUN_KEY}.release"
 HOLDER_PID_FILE="${LOCK_DIR}/${RESOURCE_ID}.holder"
 
 mkdir -p "${LOCK_DIR}"
+chmod 1777 "${LOCK_DIR}" || true
+# 清理当前 run 的残留释放标记，避免误判为可释放
+rm -f "${RELEASE_FILE}" || true
 
 # 打开锁文件并获取排他锁（阻塞等待）
 exec 200>"${LOCK_FILE}"
+chmod 666 "${LOCK_FILE}" || true
 echo "[$(date -Iseconds)] ⏳ Waiting for lock: ${RESOURCE_ID}" >&2
 flock -x 200
 echo "[$(date -Iseconds)] ✅ Acquired lock for ${RESOURCE_ID}" >&2
 
 # 后台子进程继承 fd 200 并持有锁，等待 post-job 创建释放文件
 (
+  holder_pid="${BASHPID:-$$}"
+  printf '%s %s %s %s\n' \
+    "${holder_pid}" \
+    "${RUNNER_NAME_SAFE}" \
+    "${RUN_ID_SAFE}" \
+    "${RUN_ATTEMPT_SAFE}" > "${HOLDER_PID_FILE}"
+  chmod 666 "${HOLDER_PID_FILE}" || true
+
   while [ ! -f "${RELEASE_FILE}" ]; do
     sleep 1
   done
-  rm -f "${RELEASE_FILE}" "${HOLDER_PID_FILE}"
+
+  # 仅清理由自己写入的 holder 记录，避免并发切换时误删新 holder 信息
+  current_holder_pid=""
+  if [ -f "${HOLDER_PID_FILE}" ]; then
+    read -r current_holder_pid _ < "${HOLDER_PID_FILE}" || true
+  fi
+  rm -f "${RELEASE_FILE}" || true
+  if [ "${current_holder_pid}" = "${holder_pid}" ]; then
+    rm -f "${HOLDER_PID_FILE}" || true
+  fi
 ) &
-echo $! > "${HOLDER_PID_FILE}"
 
 # 主脚本退出，子进程继续持有 fd 200，锁保持到 post-job 执行
 exit 0

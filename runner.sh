@@ -520,9 +520,13 @@ shell_generate_compose_file() {
     # 原因：两种板子 runner 都可能需要文件锁机制
     local extra_env_phytiumpi=()
     local extra_env_roc=()
+    local extra_proxy_env=()
     # 只有设置了相应的资源 ID，才为该类型 runner 添加锁相关环境变量
     [[ -n "$res_phytiumpi" ]] && extra_env_phytiumpi=("      RUNNER_RESOURCE_ID: \"$res_phytiumpi\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
     [[ -n "$res_roc" ]] && extra_env_roc=("      RUNNER_RESOURCE_ID: \"$res_roc\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
+    [[ -n "${HTTP_PROXY:-}" ]] && extra_proxy_env+=("    HTTP_PROXY: \"${HTTP_PROXY}\"")
+    [[ -n "${HTTPS_PROXY:-}" ]] && extra_proxy_env+=("    HTTPS_PROXY: \"${HTTPS_PROXY}\"")
+    [[ -n "${NO_PROXY:-}" ]] && extra_proxy_env+=("    NO_PROXY: \"${NO_PROXY}\"")
 
     # ════════════════════════════════════════════════════════════════
     # 第四步：为两种板子 runner 类型准备卷挂载配置
@@ -554,9 +558,7 @@ shell_generate_compose_file() {
         "    RUNNER_REMOVE_ON_STOP: \"false\"" \
         "    DISABLE_AUTO_UPDATE: \"${DISABLE_AUTO_UPDATE}\"" \
         "    RUNNER_WORKDIR: \"${RUNNER_WORKDIR}\"" \
-        "    HTTP_PROXY: \"http://127.0.0.1:7890\"" \
-        "    HTTPS_PROXY: \"http://127.0.0.1:7890\"" \
-        "    NO_PROXY: localhost,127.0.0.1,.internal" \
+        "${extra_proxy_env[@]}" \
         "  network_mode: host" \
         "  privileged: true" \
         "" \
@@ -645,6 +647,7 @@ shell_generate_compose_file() {
             "    volumes:" \
             "      - /home/$(whoami)/test/phytiumpi:/home/runner/tftp" \
             "$extra_vol_phytiumpi" \
+            "      - ./runner-wrapper:/home/runner/runner-wrapper:ro" \
             "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-data:/home/runner" \
             "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules:/etc/udev/rules.d" \
             "" >> "${COMPOSE_FILE}"
@@ -695,6 +698,7 @@ shell_generate_compose_file() {
             "      BOARD_COMM_UART_BAUD: \"1500000\"" \
             "${extra_env_roc[@]}" \
             "    volumes:" \
+            "      - ./runner-wrapper:/home/runner/runner-wrapper:ro" \
             "$extra_vol_roc" \
             "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data:/home/runner" \
             "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:/etc/udev/rules.d" \
@@ -1220,7 +1224,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 shell_info "Successfully built ${RUNNER_CUSTOM_IMAGE} image"
                 
                 # Update hash file
-                local new_hash=""
+                new_hash=""
                 if command -v sha256sum >/dev/null 2>&1; then
                     new_hash=$(sha256sum Dockerfile | awk '{print $1}')
                 elif command -v shasum >/dev/null 2>&1; then
