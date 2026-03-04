@@ -50,6 +50,7 @@ RUNNER_LOCK_DIR=/tmp/github-runner-locks
 
 关键要求：
 
+- 只有设置了 `RUNNER_RESOURCE_ID_PHYTIUMPI` / `RUNNER_RESOURCE_ID_ROC_RK3568_PC` 的板子才会启用 runner-wrapper 与锁目录挂载，未配置的板子仍使用默认 `run.sh`，不参与锁协调。
 - 两套配置的 `RUNNER_RESOURCE_ID_*` 必须一致（同板卡共享同一锁）。
 - 两套配置的 `RUNNER_LOCK_HOST_PATH` 必须一致（指向同一宿主机目录）。
 
