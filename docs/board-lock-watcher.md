@@ -9,7 +9,7 @@
 - **`runner-wrapper/runner-wrapper.sh`**：为 Runner 注入 Job Started / Completed 钩子。
 - **`runner-wrapper/pre-job-lock.sh`**：在 Job 开始前获取板子级文件锁（`flock`），并通过后台子进程持有锁。
 - **`runner-wrapper/post-job-lock.sh`**：在 Job 结束时创建 `.release` 标记，唤醒持锁子进程释放锁。
-- **`runner-wrapper/lock-watcher.sh`**（新增）：运行在宿主机上的守护脚本，周期性查询某个仓库下 Actions Run 的状态；当发现持锁 Run 已被 **Cancel** 时，强制清理解锁文件，避免后续等待 Job 永久卡死。**一个 watcher 进程可同时监控多块板子**（由 `.env` 中配置的 `RUNNER_RESOURCE_ID_*` 决定）。
+- **`runner-wrapper/lock-watcher.sh`**：周期性查询 GitHub Actions Run 的状态；当发现持锁 Run 已被 **Cancel** 时，强制清理解锁文件，避免后续等待 Job 永久卡死。**一个 watcher 进程可同时监控多块板子**。配置 `RUNNER_LOCK_MONITOR_TOKEN` 后，watcher 会作为 compose 服务随 `./runner.sh start` **自动启动**，与锁机制一样使用无感。
 
 锁文件结构（默认目录 `/tmp/github-runner-locks`）：
 
@@ -25,8 +25,8 @@
 
 | 时机 | 要做的事 |
 |------|----------|
-| **第一次在这台机器上部署** | ① 准备各组织的 `.env`（含 ORG、REPO、GH_PAT、板子锁变量、以及要用 watcher 时必填 `RUNNER_LOCK_MONITOR_TOKEN`）<br>② **在宿主机**设置锁目录权限：`sudo mkdir -p /tmp/github-runner-locks && sudo chmod 1777 /tmp/github-runner-locks`（[详见 2.1](#21-宿主机锁目录权限首次部署或报-permission-denied-时)）<br>③ 每个组织执行一次 `./runner.sh init -n 2`，生成 compose、起容器并注册<br>④（使用 watcher 时必装）安装 `jq`：`sudo apt install -y jq`（[详见 3.3](#33-安装依赖使用-watcher-时必装)）<br>⑤ 每个组织起**一个** watcher 即可：`ENV_FILE=.env.xxx ./runner.sh watcher`（会监控该 .env 下配置的**所有**板子），建议用 tmux/screen 或 systemd 常驻（[详见 3.0.1](#301-让-watcher-常驻tmux--screen--systemd)） |
-| **以后每次使用（非初次）** | 需要时执行 `ENV_FILE=.env.xxx ./runner.sh start`（每个组织）；watcher 若已用 tmux/screen/systemd 常驻则不用管，否则再按上面命令各起一个 |
+| **第一次在这台机器上部署** | ① 准备各组织的 `.env`（含 ORG、REPO、GH_PAT、板子锁变量、以及 `RUNNER_LOCK_MONITOR_TOKEN`）<br>② **在宿主机**设置锁目录权限：`sudo mkdir -p /tmp/github-runner-locks && sudo chmod 1777 /tmp/github-runner-locks`（[详见 2.1](#21-宿主机锁目录权限首次部署或报-permission-denied-时)）<br>③ 每个组织执行一次 `./runner.sh init -n 2`，生成 compose、起容器并注册<br>④ watcher 会作为 compose 服务**随 start 自动启动**，无需单独起进程（[详见 3](#3-watcher-自动启动与锁使用无感)） |
+| **以后每次使用（非初次）** | 执行 `ENV_FILE=.env.xxx ./runner.sh start`（每个组织）；watcher 随 runners 一起启停，使用无感 |
 
 ---
 
@@ -42,7 +42,7 @@ GH_PAT=ghp_xxx                           # Runner 注册用，权限见 2.2
 RUNNER_RESOURCE_ID_ROC_RK3568_PC=board-roc-rk3568-pc
 RUNNER_LOCK_HOST_PATH=/tmp/github-runner-locks
 RUNNER_LOCK_DIR=/tmp/github-runner-locks
-# 必填（仅在使用 ./runner.sh watcher 时）：Fine-grained PAT，Actions: Read-only
+# 必填（watcher 自动启动时用）：Fine-grained PAT，Actions: Read-only
 RUNNER_LOCK_MONITOR_TOKEN=github_pat_xxx
 ```
 
@@ -93,27 +93,27 @@ ENV_FILE=.env.yoinspiration ./runner.sh restart
 
 ---
 
-### 3. 宿主机上配置 lock-watcher
+### 3. Watcher 自动启动（与锁使用无感）
 
-#### 3.0 推荐：通过 runner.sh 启动（与锁同源配置，使用无感）
+配置 `RUNNER_LOCK_MONITOR_TOKEN` 后，`./runner.sh compose` 或 `init` 生成的 compose 会包含 **lock-watcher** 服务。执行 `./runner.sh start` 时，watcher 会随 runners 一起启动；`stop` / `restart` 时一起停止，**无需单独开终端或 systemd**。
 
-Watcher 已集成进 `runner.sh`，**可直接复用各组织的 `.env`**，无需单独维护 `.env.watcher`：
-
-1. 在对应组织的 `.env` 中增加一行（必填）：
+1. 在对应组织的 `.env` 中增加（必填）：
    ```bash
    RUNNER_LOCK_MONITOR_TOKEN=github_pat_xxx   # Fine-grained PAT，Actions: Read-only
    ```
-2. 在宿主机执行（与 start/restart 同一套 ENV_FILE）：
+2. 若已有 compose，需重新生成以加入 watcher：
+   ```bash
+   ENV_FILE=.env.linebridge ./runner.sh compose
+   ```
+3. 之后执行 `./runner.sh start` 即可，watcher 自动随 runners 启停。
+
+**手动单独运行**（可选）：若需在 compose 外单独跑 watcher（例如另一台机器），仍可使用：
    ```bash
    ENV_FILE=.env.linebridge ./runner.sh watcher
    ```
-   **不传参时**：脚本会监控当前 `.env` 中配置的**所有**板子（`RUNNER_RESOURCE_ID_ROC_RK3568_PC` 与 `RUNNER_RESOURCE_ID_PHYTIUMPI` 若已设置则都会监控）。**传参时**只监控指定的一块板子：
-   ```bash
-   ENV_FILE=.env.linebridge ./runner.sh watcher board-roc-rk3568-pc
-   ```
-3. 建议用 tmux/screen 或 systemd 常驻该进程；多组织时每个组织各开一个终端（或服务）运行 `./runner.sh watcher`（每个组织一个进程即可，该进程会监控该组织下所有板子）。具体做法见下文「3.0.1 让 watcher 常驻」。
+   建议用 tmux/screen 常驻。传参可指定只监控一块板子：`./runner.sh watcher board-roc-rk3568-pc`。
 
-#### 3.0.1 让 watcher 常驻（tmux / screen / systemd）
+#### 3.0.1 手动常驻（仅在不使用 compose 自动启动时）
 
 任选一种方式，使 watcher 在断开 SSH 或重启后仍可运行。
 
@@ -208,8 +208,8 @@ journalctl -u github-runner-watcher-linebridge -f
 
 #### 3.1 实例数量建议
 
-- 默认推荐：**每个参与共享同一块板子的仓库，各启动一个 watcher 实例**（即每个组织一份 `.env`，各执行一次 `./runner.sh watcher`）。  
-- 例如：`linebridge/test-runner`、`yoinspiration/test-runner` 分别执行 `ENV_FILE=.env.linebridge ./runner.sh watcher` 与 `ENV_FILE=.env.yoinspiration ./runner.sh watcher`。
+- **使用 compose 自动启动**：每组织一个 watcher 容器，随 `./runner.sh start` 自动拉起；无需额外配置。
+- **手动运行**：每组织一个 watcher 进程，分别执行 `ENV_FILE=.env.linebridge ./runner.sh watcher` 与 `ENV_FILE=.env.yoinspiration ./runner.sh watcher`。
 
 #### 3.2 准备 PAT
 
@@ -220,23 +220,31 @@ journalctl -u github-runner-watcher-linebridge -f
 
 生成后得到 `github_pat_xxx`。
 
-#### 3.3 安装依赖（使用 watcher 时必装）
+#### 3.3 安装依赖
 
-watcher 依赖 `jq` 解析 GitHub API 返回的 JSON；未安装时无法识别 run 的 `status/conclusion`，不会触发 Cancel 后清锁。在宿主机上执行：
-
-```bash
-sudo apt update
-sudo apt install -y jq
-```
+- **compose 自动启动**：watcher 容器使用 alpine，启动时自动安装 `jq`，宿主机无需安装。
+- **手动运行 watcher**：需在宿主机安装 `jq`：`sudo apt install -y jq`，否则无法解析 run 状态。
 
 ---
 
-### 4. 启动 lock-watcher
+### 4. 启动与验证
 
-**用 runner.sh 启动，与锁同源配置**
+**compose 自动启动（推荐）**
 
 ```bash
 cd /path/to/github-runners
+ENV_FILE=.env.linebridge ./runner.sh start
+```
+
+watcher 会随 runners 一起启动。查看 watcher 日志：
+
+```bash
+docker logs -f $(docker ps -q -f name=lock-watcher)
+```
+
+**手动运行 watcher**（可选）
+
+```bash
 ENV_FILE=.env.linebridge ./runner.sh watcher
 ```
 
