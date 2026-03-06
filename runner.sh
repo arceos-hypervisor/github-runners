@@ -979,19 +979,19 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             export ORG REPO
             export RUNNER_LOCK_DIR="${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
             if [[ -n "${1:-}" ]]; then
-              export RUNNER_RESOURCE_ID="$1"
+              export RUNNER_RESOURCE_IDS="$1"
             else
-              if [[ -n "${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}" ]]; then
-                export RUNNER_RESOURCE_ID="${RUNNER_RESOURCE_ID_ROC_RK3568_PC}"
-              elif [[ -n "${RUNNER_RESOURCE_ID_PHYTIUMPI:-}" ]]; then
-                export RUNNER_RESOURCE_ID="${RUNNER_RESOURCE_ID_PHYTIUMPI}"
-              else
+              ids=()
+              [[ -n "${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}" ]] && ids+=("${RUNNER_RESOURCE_ID_ROC_RK3568_PC}")
+              [[ -n "${RUNNER_RESOURCE_ID_PHYTIUMPI:-}" ]] && ids+=("${RUNNER_RESOURCE_ID_PHYTIUMPI}")
+              if [[ ${#ids[@]} -eq 0 ]]; then
                 shell_die "No board resource ID set (RUNNER_RESOURCE_ID_ROC_RK3568_PC / RUNNER_RESOURCE_ID_PHYTIUMPI). Set one in .env or pass: ./runner.sh watcher <resource-id>"
               fi
+              export RUNNER_RESOURCE_IDS="${ids[*]}"
             fi
             WATCHER_SCRIPT="$(cd "$(dirname "$0")" && pwd)/runner-wrapper/lock-watcher.sh"
             [[ -x "${WATCHER_SCRIPT}" ]] || shell_die "lock-watcher.sh not found or not executable: ${WATCHER_SCRIPT}"
-            shell_info "Starting lock-watcher for ${ORG}/${REPO}, resource=${RUNNER_RESOURCE_ID}"
+            shell_info "Starting lock-watcher for ${ORG}/${REPO}, resources=${RUNNER_RESOURCE_IDS}"
             exec "${WATCHER_SCRIPT}"
             ;;
 
