@@ -101,16 +101,20 @@ shell_usage() {
   printf "  %-${COLW}s %s\n" "./runner.sh ps|ls|list|status" "Show container status and registered Runner status"
   echo
 
-  echo "4. Deletion commands:"
+  echo "4. Lock watcher (Cancel 后自动释放板卡锁):"
+  printf "  %-${COLW}s %s\n" "./runner.sh watcher [resource]" "Start lock-watcher (uses same .env; requires RUNNER_LOCK_MONITOR_TOKEN)"
+  echo
+
+  echo "5. Deletion commands:"
   printf "  %-${COLW}s %s\n" "./runner.sh rm|remove|delete [${RUNNER_NAME_PREFIX}runner-<id> ...]" "Delete specified instances; no args will delete all (confirmation required, -y to skip)"
   printf "  %-${COLW}s %s\n" "./runner.sh purge [-y]" "On top of remove, also delete the dynamically generated docker-compose.yml"
   echo
 
-  echo "5. Image management commands:"
+  echo "6. Image management commands:"
   printf "  %-${COLW}s %s\n" "./runner.sh image" "Rebuild Docker image based on Dockerfile"
   echo
 
-  echo "6. Help"
+  echo "7. Help"
   printf "  %-${COLW}s %s\n" "./runner.sh help" "Show this help"
   echo
 
@@ -126,6 +130,7 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_ROC_RK3568_PC" "Lock ID for roc-rk3568-pc board (default: board-roc-rk3568-pc); same ID = serial"
   printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_DIR" "Lock dir in container (default /tmp/github-runner-locks)"
   printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_HOST_PATH" "Lock dir on host for bind mount (default /tmp/github-runner-locks)"
+  printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_MONITOR_TOKEN" "Fine-grained PAT, Actions read-only (required for watcher)"
   echo
   echo "Example workflow runs-on: runs-on: [self-hosted, linux, docker]"
 
@@ -964,6 +969,30 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             echo
             shell_info "Due to GitHub limitations, runner list is limited to 100 entries!"
             echo
+            ;;
+
+        # ./runner.sh watcher [resource]
+        watcher)
+            shell_get_org_and_pat
+            [[ -n "${RUNNER_LOCK_MONITOR_TOKEN:-}" ]] || shell_die "RUNNER_LOCK_MONITOR_TOKEN is required for watcher (use Fine-grained PAT with Actions: Read-only)."
+            export GITHUB_TOKEN="${RUNNER_LOCK_MONITOR_TOKEN}"
+            export ORG REPO
+            export RUNNER_LOCK_DIR="${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
+            if [[ -n "${1:-}" ]]; then
+              export RUNNER_RESOURCE_ID="$1"
+            else
+              if [[ -n "${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}" ]]; then
+                export RUNNER_RESOURCE_ID="${RUNNER_RESOURCE_ID_ROC_RK3568_PC}"
+              elif [[ -n "${RUNNER_RESOURCE_ID_PHYTIUMPI:-}" ]]; then
+                export RUNNER_RESOURCE_ID="${RUNNER_RESOURCE_ID_PHYTIUMPI}"
+              else
+                shell_die "No board resource ID set (RUNNER_RESOURCE_ID_ROC_RK3568_PC / RUNNER_RESOURCE_ID_PHYTIUMPI). Set one in .env or pass: ./runner.sh watcher <resource-id>"
+              fi
+            fi
+            WATCHER_SCRIPT="$(cd "$(dirname "$0")" && pwd)/runner-wrapper/lock-watcher.sh"
+            [[ -x "${WATCHER_SCRIPT}" ]] || shell_die "lock-watcher.sh not found or not executable: ${WATCHER_SCRIPT}"
+            shell_info "Starting lock-watcher for ${ORG}/${REPO}, resource=${RUNNER_RESOURCE_ID}"
+            exec "${WATCHER_SCRIPT}"
             ;;
 
         # ./runner.sh init -n|--count N
