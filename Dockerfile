@@ -132,3 +132,4 @@ RUN rustup component add clippy llvm-tools rust-src rustfmt --toolchain nightly
 # RUN echo '[source.crates-io]\nreplace-with = "rsproxy-sparse"\n[source.rsproxy]\nregistry = "https://rsproxy.cn/crates.io-index"\n[source.rsproxy-sparse]\nregistry = "sparse+https://rsproxy.cn/index/"\n[registries.rsproxy]\nindex = "https://rsproxy.cn/crates.io-index"\n[net]\ngit-fetch-with-cli = true' > /home/runner/.cargo/config.toml
 
 RUN cargo install cargo-binutils
+RUN cargo install cargo-clone
