@@ -112,6 +112,48 @@ RUNNER_RESOURCE_ID_PHYTIUMPI=board-phytiumpi
 
 **注意**：串行是硬件本身的限制，本方案把「无秩序抢占」变为「有序排队」，不额外降低吞吐。不同板子使用各自锁 ID 可并行执行。详见 [runner-wrapper/README.md](runner-wrapper/README.md)，参考 [Discussion #341](https://github.com/orgs/arceos-hypervisor/discussions/341)。
 
+### 常见问题：`pre-job-lock.sh` 报 `Permission denied`
+
+如果 Job 日志中出现类似报错：
+
+- `chmod: changing permissions of '/tmp/github-runner-locks': Operation not permitted`
+- `/tmp/github-runner-locks/board-xxx.lock: Permission denied`
+
+通常是宿主机锁目录权限不正确，或把锁目录放在宿主机 `/tmp` 后被系统清理导致权限漂移。
+
+推荐配置（多组织保持一致）：
+
+- `RUNNER_LOCK_HOST_PATH=/var/tmp/github-runner-locks`（宿主机持久目录）
+- `RUNNER_LOCK_DIR=/tmp/github-runner-locks`（容器内路径，保持默认）
+
+一次性修复步骤：
+
+```bash
+# 1) 在宿主机创建并设置目录权限（sticky bit 1777）
+sudo mkdir -p /var/tmp/github-runner-locks
+sudo chown root:root /var/tmp/github-runner-locks
+sudo chmod 1777 /var/tmp/github-runner-locks
+
+# 2) 修改每个组织对应 .env
+# RUNNER_LOCK_HOST_PATH=/var/tmp/github-runner-locks
+# RUNNER_LOCK_DIR=/tmp/github-runner-locks
+
+# 3) 重新生成 compose，并重建容器使挂载生效
+ENV_FILE=.env.<org1> ./runner.sh compose
+ENV_FILE=.env.<org1> ./runner.sh stop
+ENV_FILE=.env.<org1> ./runner.sh start
+```
+
+验证：
+
+```bash
+ls -ld /var/tmp/github-runner-locks
+# 期望：drwxrwxrwt
+
+docker inspect <runner-container-name> --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+# 期望包含：/var/tmp/github-runner-locks -> /tmp/github-runner-locks
+```
+
 ## 贡献
 
 ```bash

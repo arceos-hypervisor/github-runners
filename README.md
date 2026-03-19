@@ -112,6 +112,48 @@ RUNNER_RESOURCE_ID_PHYTIUMPI=board-phytiumpi
 
 **Note**: Serialization is a hardware limitation. This approach transforms "chaotic contention" into "ordered queuing" without reducing throughput. Different boards using their own lock IDs can run in parallel.See [runner-wrapper/README.md](runner-wrapper/README.md) for details. Reference: [Discussion #341](https://github.com/orgs/arceos-hypervisor/discussions/341).
 
+### Troubleshooting: `Permission denied` in `pre-job-lock.sh`
+
+If job logs show errors like:
+
+- `chmod: changing permissions of '/tmp/github-runner-locks': Operation not permitted`
+- `/tmp/github-runner-locks/board-xxx.lock: Permission denied`
+
+the host lock directory permissions are usually incorrect, or the lock directory is placed under host `/tmp` and gets cleaned up by the system, causing permission drift.
+
+Recommended configuration (keep consistent across organizations):
+
+- `RUNNER_LOCK_HOST_PATH=/var/tmp/github-runner-locks` (persistent host directory)
+- `RUNNER_LOCK_DIR=/tmp/github-runner-locks` (container path, keep default)
+
+One-time fix:
+
+```bash
+# 1) Create host directory and set sticky-bit permissions (1777)
+sudo mkdir -p /var/tmp/github-runner-locks
+sudo chown root:root /var/tmp/github-runner-locks
+sudo chmod 1777 /var/tmp/github-runner-locks
+
+# 2) Update each org's .env
+# RUNNER_LOCK_HOST_PATH=/var/tmp/github-runner-locks
+# RUNNER_LOCK_DIR=/tmp/github-runner-locks
+
+# 3) Regenerate compose and recreate containers to apply mounts
+ENV_FILE=.env.<org1> ./runner.sh compose
+ENV_FILE=.env.<org1> ./runner.sh stop
+ENV_FILE=.env.<org1> ./runner.sh start
+```
+
+Verify:
+
+```bash
+ls -ld /var/tmp/github-runner-locks
+# expected: drwxrwxrwt
+
+docker inspect <runner-container-name> --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+# expected to include: /var/tmp/github-runner-locks -> /tmp/github-runner-locks
+```
+
 ## Contributing
 
 ```bash
