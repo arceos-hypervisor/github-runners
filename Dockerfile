@@ -112,21 +112,14 @@ RUN set -eux; \
     cargo --version; \
     rustc --version;
 
-# Install additional Rust toolchains
-RUN rustup toolchain install nightly-2025-12-12
-
-# Install additional targets and components 
-RUN rustup target add aarch64-unknown-none-softfloat \
-    riscv64gc-unknown-none-elf \
-    x86_64-unknown-none \
-    loongarch64-unknown-none-softfloat --toolchain nightly-2025-12-12
-RUN rustup target add aarch64-unknown-none-softfloat \
-    riscv64gc-unknown-none-elf \
-    x86_64-unknown-none \
-    loongarch64-unknown-none-softfloat --toolchain nightly
-
-RUN rustup component add clippy llvm-tools rust-src rustfmt --toolchain nightly-2025-12-12
-RUN rustup component add clippy llvm-tools rust-src rustfmt --toolchain nightly
+# Install additional Rust toolchains, targets and components
+RUN rustup toolchain install nightly-2025-12-12 nightly-2026-02-25 && \
+    rustup target add aarch64-unknown-none-softfloat riscv64gc-unknown-none-elf x86_64-unknown-none loongarch64-unknown-none-softfloat --toolchain nightly-2025-12-12 && \
+    rustup target add aarch64-unknown-none-softfloat riscv64gc-unknown-none-elf x86_64-unknown-none loongarch64-unknown-none-softfloat --toolchain nightly-2026-02-25 && \
+    rustup target add aarch64-unknown-none-softfloat riscv64gc-unknown-none-elf x86_64-unknown-none loongarch64-unknown-none-softfloat --toolchain nightly && \
+    rustup component add clippy llvm-tools rust-src rustfmt --toolchain nightly-2025-12-12 && \
+    rustup component add clippy llvm-tools rust-src rustfmt --toolchain nightly-2026-02-25 && \
+    rustup component add clippy llvm-tools rust-src rustfmt --toolchain nightly
 
 # Add Rust mirror configuration to ~/.cargo/config.toml
 # RUN echo '[source.crates-io]\nreplace-with = "rsproxy-sparse"\n[source.rsproxy]\nregistry = "https://rsproxy.cn/crates.io-index"\n[source.rsproxy-sparse]\nregistry = "sparse+https://rsproxy.cn/index/"\n[registries.rsproxy]\nindex = "https://rsproxy.cn/crates.io-index"\n[net]\ngit-fetch-with-cli = true' > /home/runner/.cargo/config.toml
