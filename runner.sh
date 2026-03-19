@@ -37,11 +37,12 @@ fi
 RUNNER_GROUP="${RUNNER_GROUP:-Default}"
 RUNNER_WORKDIR="${RUNNER_WORKDIR:-}"
 RUNNER_LABELS="${RUNNER_LABELS:-intel}"
-RUNNER_BOARD="2"
+RUNNER_BOARD="3"
 DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
 # 板子级：未设置时用本板默认值（同类型板串行、不同类型板并行）；多组织共享同一块板时显式设为相同 ID 即可
 RUNNER_RESOURCE_ID_PHYTIUMPI="${RUNNER_RESOURCE_ID_PHYTIUMPI:-}"
 RUNNER_RESOURCE_ID_ROC_RK3568_PC="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}"
+RUNNER_RESOURCE_ID_X86_64_PC="${RUNNER_RESOURCE_ID_X86_64_PC:-}"
 RUNNER_LOCK_DIR="${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
 RUNNER_LOCK_HOST_PATH="${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}"
 # Compose 文件名：未显式设置时自动拼入 ORG/REPO，避免同一主机多组织时文件冲突
@@ -124,6 +125,7 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "RUNNER_CUSTOM_IMAGE" "Image tag used for auto-build (can override)"
   printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_PHYTIUMPI" "Lock ID for phytiumpi board (default: board-phytiumpi); same ID = serial across runners"
   printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_ROC_RK3568_PC" "Lock ID for roc-rk3568-pc board (default: board-roc-rk3568-pc); same ID = serial"
+  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_X86_64_PC" "Lock ID for x86_64-pc board (default: board-x86_64-pc); same ID = serial"
   printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_DIR" "Lock dir in container (default /tmp/github-runner-locks)"
   printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_HOST_PATH" "Lock dir on host for bind mount (default /tmp/github-runner-locks)"
   echo
@@ -492,9 +494,11 @@ shell_generate_compose_file() {
     # 第一步：为两种板子 runner 类型定义资源 ID
     # ════════════════════════════════════════════════════════════════
     # 硬件板 phytiumpi - 总是启用文件锁
-    local res_phytiumpi="${RUNNER_RESOURCE_ID_PHYTIUMPI:-}"
+    local res_phytiumpi="${RUNNER_RESOURCE_ID_PHYTIUMPI:-board-phytiumpi}"
     # 硬件板 roc - 总是启用文件锁
-    local res_roc="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}"
+    local res_roc="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-board-roc-rk3568-pc}"
+    # 硬件板 x86_64 - 总是启用文件锁
+    local res_x86_64="${RUNNER_RESOURCE_ID_X86_64_PC:-board-x86_64-pc}"
 
     # ════════════════════════════════════════════════════════════════
     # 第二步：两种板子 runner 类型的 entrypoint 配置
@@ -504,9 +508,11 @@ shell_generate_compose_file() {
     # 普通 runner 始终使用 /home/runner/run.sh（不经过 runner-wrapper）
     local runner_entrypoint_phytiumpi="/home/runner/run.sh"
     local runner_entrypoint_roc="/home/runner/run.sh"
+    local runner_entrypoint_x86_64="/home/runner/run.sh"
     # 若设置了资源 ID，则改用 runner-wrapper 来处理文件锁
     [[ -n "$res_phytiumpi" ]] && runner_entrypoint_phytiumpi="/home/runner/runner-wrapper/runner-wrapper.sh"
     [[ -n "$res_roc" ]] && runner_entrypoint_roc="/home/runner/runner-wrapper/runner-wrapper.sh"
+    [[ -n "$res_x86_64" ]] && runner_entrypoint_x86_64="/home/runner/runner-wrapper/runner-wrapper.sh"
 
     # ════════════════════════════════════════════════════════════════
     # 第三步：为两种板子 runner 类型准备额外的环境变量数组
@@ -520,10 +526,12 @@ shell_generate_compose_file() {
     # 原因：两种板子 runner 都可能需要文件锁机制
     local extra_env_phytiumpi=()
     local extra_env_roc=()
+    local extra_env_x86_64=()
     local extra_proxy_env=()
     # 只有设置了相应的资源 ID，才为该类型 runner 添加锁相关环境变量
     [[ -n "$res_phytiumpi" ]] && extra_env_phytiumpi=("      RUNNER_RESOURCE_ID: \"$res_phytiumpi\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
     [[ -n "$res_roc" ]] && extra_env_roc=("      RUNNER_RESOURCE_ID: \"$res_roc\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
+    [[ -n "$res_x86_64" ]] && extra_env_x86_64=("      RUNNER_RESOURCE_ID: \"$res_x86_64\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
     [[ -n "${HTTP_PROXY:-}" ]] && extra_proxy_env+=("    HTTP_PROXY: \"${HTTP_PROXY}\"")
     [[ -n "${HTTPS_PROXY:-}" ]] && extra_proxy_env+=("    HTTPS_PROXY: \"${HTTPS_PROXY}\"")
     [[ -n "${NO_PROXY:-}" ]] && extra_proxy_env+=("    NO_PROXY: \"${NO_PROXY}\"")
@@ -536,9 +544,11 @@ shell_generate_compose_file() {
     # 原因：文件锁机制需要在主机和容器间共享锁文件
     local extra_vol_phytiumpi=""
     local extra_vol_roc=""
+    local extra_vol_x86_64=""
     # 只有设置了相应的资源 ID，才为该类型 runner 挂载锁文件目录
     [[ -n "$res_phytiumpi" ]] && extra_vol_phytiumpi="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
     [[ -n "$res_roc" ]] && extra_vol_roc="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
+    [[ -n "$res_x86_64" ]] && extra_vol_x86_64="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
 
     # 使用 printf 输出文件头
     printf '%s\n' \
@@ -703,6 +713,43 @@ shell_generate_compose_file() {
             "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data:/home/runner" \
             "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:/etc/udev/rules.d" \
             "" >> "${COMPOSE_FILE}"
+
+        # x86_64 板子配置
+        printf '%s\n' \
+            "  ${RUNNER_NAME_PREFIX}runner-x86_64-pc:" \
+            "    <<: *runner_base" \
+            "    container_name: \"${RUNNER_NAME_PREFIX}runner-x86_64-pc\"" \
+            "    command: [\"${runner_entrypoint_x86_64}\"]" \
+            "    devices:" \
+            "      - /dev/loop-control:/dev/loop-control" \
+            "      - /dev/loop0:/dev/loop0" \
+            "      - /dev/loop1:/dev/loop1" \
+            "      - /dev/loop2:/dev/loop2" \
+            "      - /dev/loop3:/dev/loop3" \
+            "      - /dev/kvm:/dev/kvm" \
+            "      - /dev/ttyUSB4:/dev/ttyUSB4" \
+            "      - /dev/ttyUSB5:/dev/ttyUSB5" \
+            "    group_add:" \
+            "      - 993" \
+            "      - dialout" \
+            "    environment:" \
+            "      <<: *runner_env" \
+            "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-x86_64-pc\"" \
+            "      RUNNER_LABELS: \"x86_64-pc\"" \
+            "      BOARD_POWER_ON: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB4 1\"" \
+            "      BOARD_POWER_OFF: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB4 0\"" \
+            "      BOARD_POWER_RESET: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB4 0 && sleep 2 && mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB4 1\"" \
+            "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB5\"" \
+            "      BOARD_COMM_UART_BAUD: \"115200\"" \
+            "      BIN_DIR: \"/home/runner/test/x86_64-pc\"" \
+            "${extra_env_x86_64[@]}" \
+            "    volumes:" \
+            "      - /home/$(whoami)/test/x86_64-pc:/home/runner/tftp" \
+            "$extra_vol_x86_64" \
+            "      - ./runner-wrapper:/home/runner/runner-wrapper:ro" \
+            "      - ${RUNNER_NAME_PREFIX}runner-x86_64-pc-data:/home/runner" \
+            "      - ${RUNNER_NAME_PREFIX}runner-x86_64-pc-udev-rules:/etc/udev/rules.d" \
+            "" >> "${COMPOSE_FILE}"
     fi
 
     # 生成 volumes
@@ -731,6 +778,13 @@ shell_generate_compose_file() {
             "    name: ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data" \
             "  ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:" \
             "    name: ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules" >> "${COMPOSE_FILE}"
+
+        # 为 x86_64 板子生成 volumes
+        printf '%s\n' \
+            "  ${RUNNER_NAME_PREFIX}runner-x86_64-pc-data:" \
+            "    name: ${RUNNER_NAME_PREFIX}runner-x86_64-pc-data" \
+            "  ${RUNNER_NAME_PREFIX}runner-x86_64-pc-udev-rules:" \
+            "    name: ${RUNNER_NAME_PREFIX}runner-x86_64-pc-udev-rules" >> "${COMPOSE_FILE}"
     fi
 }
 
