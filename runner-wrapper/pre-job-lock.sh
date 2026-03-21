@@ -18,8 +18,20 @@ LOCK_FILE="${LOCK_DIR}/${RESOURCE_ID}.lock"
 RELEASE_FILE="${LOCK_DIR}/${RESOURCE_ID}.${RUN_KEY}.release"
 HOLDER_PID_FILE="${LOCK_DIR}/${RESOURCE_ID}.holder"
 
-mkdir -p "${LOCK_DIR}"
+if ! mkdir -p "${LOCK_DIR}" 2>/dev/null; then
+  echo "[$(date -Iseconds)] ❌ Cannot create lock dir ${LOCK_DIR}" >&2
+  exit 1
+fi
 chmod 1777 "${LOCK_DIR}" || true
+
+# 如果目录不可写，给出明确提示后退出
+if ! touch "${LOCK_DIR}/.write-test" 2>/dev/null; then
+  echo "[$(date -Iseconds)] ❌ Lock dir ${LOCK_DIR} is not writable by user $(id -un)." >&2
+  echo "[$(date -Iseconds)]    Fix on runner host: sudo chmod 1777 ${LOCK_DIR}" >&2
+  exit 1
+fi
+rm -f "${LOCK_DIR}/.write-test" || true
+
 # 清理当前 run 的残留释放标记，避免误判为可释放
 rm -f "${RELEASE_FILE}" || true
 
