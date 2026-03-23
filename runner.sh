@@ -5,6 +5,8 @@ set -euo pipefail
 export COMPOSE_IGNORE_ORPHANS=1
 
 ENV_FILE="${ENV_FILE:-.env}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PXE_BOOT_DIR="${PXE_BOOT_DIR:-${SCRIPT_DIR}/pxe-boot}"
 
 # ------------------------------- load .env file -------------------------------
 if [[ -f "$ENV_FILE" ]]; then
@@ -80,6 +82,20 @@ fi
 REG_TOKEN_CACHE_TTL="${REG_TOKEN_CACHE_TTL:-300}" # seconds, default 5 minutes
 
 # ------------------------------- Helpers -------------------------------
+if [[ -t 1 || -t 2 ]]; then
+  SHELL_COLOR_RED=$'\033[0;31m'
+  SHELL_COLOR_GREEN=$'\033[0;32m'
+  SHELL_COLOR_YELLOW=$'\033[1;33m'
+  SHELL_COLOR_BLUE=$'\033[0;34m'
+  SHELL_COLOR_RESET=$'\033[0m'
+else
+  SHELL_COLOR_RED=''
+  SHELL_COLOR_GREEN=''
+  SHELL_COLOR_YELLOW=''
+  SHELL_COLOR_BLUE=''
+  SHELL_COLOR_RESET=''
+fi
+
 shell_usage() {
   local COLW=48
   echo "Usage: ./runner.sh COMMAND [options]    Where [options] depend on COMMAND. Available COMMANDs:"
@@ -111,7 +127,12 @@ shell_usage() {
   printf "  %-${COLW}s %s\n" "./runner.sh image" "Rebuild Docker image based on Dockerfile"
   echo
 
-  echo "6. Help"
+  echo "6. PXE deployment commands:"
+  printf "  %-${COLW}s %s\n" "./runner.sh pxe --install [options]" "Deploy PXE service using templates from ./pxe-boot"
+  printf "  %-${COLW}s %s\n" "./runner.sh pxe --status" "Show PXE service status"
+  echo
+
+  echo "7. Help"
   printf "  %-${COLW}s %s\n" "./runner.sh help" "Show this help"
   echo
 
@@ -137,15 +158,483 @@ shell_usage() {
   echo "- Re-start/up will reuse existing volumes; Runner configuration and tool caches will not be lost."
 }
 
-shell_die() { echo "[ERROR] $*" >&2; exit 1; }
-shell_info() { echo "[INFO] $*"; }
-shell_warn() { echo "[WARN] $*" >&2; }
+shell_die() { printf '%s[ERROR]%s %s\n' "${SHELL_COLOR_RED}" "${SHELL_COLOR_RESET}" "$*" >&2; exit 1; }
+shell_info() { printf '%s[INFO]%s %s\n' "${SHELL_COLOR_BLUE}" "${SHELL_COLOR_RESET}" "$*"; }
+shell_warn() { printf '%s[WARN]%s %s\n' "${SHELL_COLOR_YELLOW}" "${SHELL_COLOR_RESET}" "$*" >&2; }
 
 shell_prompt_confirm() {
     # Return 0 for confirm, 1 for cancel
     local prompt="${1:-Confirm? [y/N]} "
     read -r -p "$prompt" ans
     [[ "$ans" == "y" || "$ans" == "Y" || "$ans" == "yes" || "$ans" == "YES" ]]
+}
+
+shell_escape_sed_replacement() {
+    local value="${1:-}"
+    value="${value//\\/\\\\}"
+    value="${value//&/\\&}"
+    printf '%s' "$value"
+}
+
+pxe_usage() {
+    cat <<'EOF'
+Usage: ./runner.sh pxe [options]
+
+Options:
+  -i, --install           Install and configure PXE environment
+  -s, --start             Start dnsmasq PXE service
+  -t, --stop              Stop dnsmasq PXE service
+  -c, --clean             Clean PXE configuration and optionally TFTP root
+      --status            Show PXE service status
+  -h, --help              Show this help
+      --yes               Skip confirmation when used with --clean
+      --interface NAME    Network interface to listen on (default: eno1np0)
+      --server-ip IP      PXE server IP (default: detected from interface)
+      --client-ip IP      Optional static client IP embedded into GRUB config (default: empty)
+      --mode MODE         DHCP mode: proxy | exclusive | none (default: proxy)
+      --tftp-root DIR     TFTP root directory (default: /home/root/test/x86_64-pc)
+
+Examples:
+  ./runner.sh pxe --install
+  ./runner.sh pxe --install --mode proxy
+  ./runner.sh pxe --status
+EOF
+}
+
+pxe_ipv4_to_int() {
+    local ip="$1"
+    local a b c d
+    IFS=. read -r a b c d <<< "$ip"
+    echo $(( (a << 24) | (b << 16) | (c << 8) | d ))
+}
+
+pxe_int_to_ipv4() {
+    local value="$1"
+    printf '%d.%d.%d.%d\n' \
+        $(( (value >> 24) & 255 )) \
+        $(( (value >> 16) & 255 )) \
+        $(( (value >> 8) & 255 )) \
+        $(( value & 255 ))
+}
+
+pxe_prefix_to_mask_int() {
+    local prefix="$1"
+    if [[ "$prefix" -eq 0 ]]; then
+        echo 0
+    else
+        echo $(( (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF ))
+    fi
+}
+
+pxe_prefix_to_netmask() {
+    local prefix="$1"
+    pxe_int_to_ipv4 "$(pxe_prefix_to_mask_int "$prefix")"
+}
+
+pxe_require_root() {
+    [[ "$EUID" -eq 0 ]] || shell_die "PXE deployment requires root privileges. Please run with sudo or as root."
+}
+
+pxe_require_file() {
+    local path="$1"
+    [[ -f "$path" ]] || shell_die "Required file not found: $path"
+}
+
+pxe_require_command() {
+    local cmd="$1"
+    command -v "$cmd" >/dev/null 2>&1 || shell_die "Required command not found: $cmd"
+}
+
+pxe_parse_args() {
+    PXE_ACTION=""
+    PXE_INTERFACE="${PXE_INTERFACE:-eno1np0}"
+    PXE_SERVER_IP="${PXE_SERVER_IP:-}"
+    PXE_CLIENT_IP="${PXE_CLIENT_IP:-}"
+    PXE_DHCP_MODE="${PXE_DHCP_MODE:-proxy}"
+    PXE_TFTP_ROOT="${PXE_TFTP_ROOT:-/home/root/test/x86_64-pc}"
+    PXE_KERNEL_FILE="${PXE_KERNEL_FILE:-}"
+    PXE_ASSUME_YES=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -i|--install) PXE_ACTION="install"; shift ;;
+            -s|--start) PXE_ACTION="start"; shift ;;
+            -t|--stop) PXE_ACTION="stop"; shift ;;
+            -c|--clean) PXE_ACTION="clean"; shift ;;
+            --status) PXE_ACTION="status"; shift ;;
+            --interface)
+                [[ $# -ge 2 ]] || shell_die "Missing value for --interface"
+                PXE_INTERFACE="$2"
+                shift 2
+                ;;
+            --server-ip)
+                [[ $# -ge 2 ]] || shell_die "Missing value for --server-ip"
+                PXE_SERVER_IP="$2"
+                shift 2
+                ;;
+            --client-ip)
+                [[ $# -ge 2 ]] || shell_die "Missing value for --client-ip"
+                PXE_CLIENT_IP="$2"
+                shift 2
+                ;;
+            --kernel)
+                [[ $# -ge 2 ]] || shell_die "Missing value for --kernel"
+                PXE_KERNEL_FILE="$2"
+                shift 2
+                ;;
+            --mode)
+                [[ $# -ge 2 ]] || shell_die "Missing value for --mode"
+                PXE_DHCP_MODE="$2"
+                shift 2
+                ;;
+            --tftp-root)
+                [[ $# -ge 2 ]] || shell_die "Missing value for --tftp-root"
+                PXE_TFTP_ROOT="$2"
+                shift 2
+                ;;
+            --yes|-y) PXE_ASSUME_YES=1; shift ;;
+            -h|--help) PXE_ACTION="help"; shift ;;
+            *) shell_die "Unknown pxe option: $1" ;;
+        esac
+    done
+
+    [[ -n "$PXE_ACTION" ]] || PXE_ACTION="help"
+}
+
+pxe_validate_mode() {
+    case "$PXE_DHCP_MODE" in
+        proxy|exclusive|none) ;;
+        *) shell_die "Unsupported PXE mode: ${PXE_DHCP_MODE}. Supported modes: proxy, exclusive, none." ;;
+    esac
+}
+
+pxe_check_network_interface() {
+    pxe_require_command ip
+
+    if ! ip link show "$PXE_INTERFACE" >/dev/null 2>&1; then
+        shell_warn "Available network interfaces:"
+        ip -o link show | awk -F': ' '{print $2}' >&2
+        shell_die "Network interface does not exist: $PXE_INTERFACE"
+    fi
+
+    local actual_cidr actual_ip prefix mask_int network_int
+    actual_cidr="$(ip -o -4 addr show dev "$PXE_INTERFACE" | awk '{print $4}' | head -n1)"
+    actual_ip="${actual_cidr%%/*}"
+    prefix="${actual_cidr##*/}"
+    [[ -n "$actual_ip" && -n "$prefix" ]] || shell_die "Network interface ${PXE_INTERFACE} does not have an IPv4 address."
+
+    if [[ -n "$PXE_SERVER_IP" && "$PXE_SERVER_IP" != "$actual_ip" ]]; then
+        shell_warn "Interface ${PXE_INTERFACE} currently uses ${actual_ip}; overriding requested server IP ${PXE_SERVER_IP}."
+    fi
+    PXE_SERVER_IP="$actual_ip"
+    PXE_SERVER_PREFIX="$prefix"
+    mask_int="$(pxe_prefix_to_mask_int "$prefix")"
+    network_int=$(( $(pxe_ipv4_to_int "$actual_ip") & mask_int ))
+    PXE_SERVER_NETMASK="$(pxe_prefix_to_netmask "$prefix")"
+    PXE_SERVER_NETWORK="$(pxe_int_to_ipv4 "$network_int")"
+}
+
+pxe_find_artifact() {
+    local candidate
+    for candidate in "$@"; do
+        [[ -n "$candidate" && -f "$candidate" ]] || continue
+        printf '%s\n' "$candidate"
+        return 0
+    done
+    return 1
+}
+
+pxe_install_packages() {
+    local pkgs=()
+
+    pxe_require_command apt-get
+
+    command -v ip >/dev/null 2>&1 || pkgs+=(iproute2)
+    command -v dnsmasq >/dev/null 2>&1 || pkgs+=(dnsmasq)
+    command -v grub-mkimage >/dev/null 2>&1 || pkgs+=(grub-efi-amd64-bin)
+
+    if ! pxe_find_artifact \
+        /usr/lib/ipxe/undionly.kpxe \
+        /usr/lib/ipxe/ipxe.efi \
+        /usr/lib/ipxe/snponly.efi \
+        /usr/lib/ipxe/snp.efi >/dev/null 2>&1; then
+        pkgs+=(ipxe)
+    fi
+
+    if [[ ${#pkgs[@]} -gt 0 ]]; then
+        shell_info "Installing PXE dependencies: ${pkgs[*]}"
+        apt-get update -qq
+        apt-get install -y "${pkgs[@]}"
+    fi
+}
+
+pxe_ensure_dnsmasq_conf_dir() {
+    local dnsmasq_conf="/etc/dnsmasq.conf"
+    pxe_require_file "$dnsmasq_conf"
+
+    if ! grep -Eq '^[[:space:]]*conf-dir=/etc/dnsmasq\.d/?' "$dnsmasq_conf"; then
+        printf '\nconf-dir=/etc/dnsmasq.d/,*.conf\n' >> "$dnsmasq_conf"
+    fi
+}
+
+pxe_render_template() {
+    local src="$1"
+    local dest="$2"
+    shift 2
+
+    pxe_require_file "$src"
+
+    local sed_args=()
+    local kv key value escaped
+    for kv in "$@"; do
+        key="${kv%%=*}"
+        value="${kv#*=}"
+        escaped="$(shell_escape_sed_replacement "$value")"
+        sed_args+=(-e "s|__${key}__|${escaped}|g")
+    done
+
+    sed "${sed_args[@]}" "$src" > "$dest"
+}
+
+pxe_prepare_tftp_directory() {
+    install -d -m 755 "$PXE_TFTP_ROOT"
+    install -m 0644 "${PXE_BOOT_DIR}/ipxe-mb.efi" "${PXE_TFTP_ROOT}/ipxe-mb.efi"
+
+    local bios_source fallback_efi_source
+    bios_source="$(pxe_find_artifact /usr/lib/ipxe/undionly.kpxe)" || bios_source=""
+    fallback_efi_source="$(pxe_find_artifact /usr/lib/ipxe/ipxe.efi /usr/lib/ipxe/snponly.efi /usr/lib/ipxe/snp.efi)" || fallback_efi_source=""
+
+    if [[ -n "$bios_source" ]]; then
+        install -m 0644 "$bios_source" "${PXE_TFTP_ROOT}/undionly.kpxe"
+        PXE_BIOS_BOOT_LINE="dhcp-boot=tag:!ipxe,tag:bios,undionly.kpxe,,${PXE_SERVER_IP}"
+    else
+        PXE_BIOS_BOOT_LINE="# BIOS support disabled: undionly.kpxe not found"
+        shell_warn "undionly.kpxe was not found; legacy BIOS PXE clients will be unsupported."
+    fi
+
+    if [[ -n "$fallback_efi_source" ]]; then
+        install -m 0644 "$fallback_efi_source" "${PXE_TFTP_ROOT}/ipxe.efi"
+        PXE_FALLBACK_EFI_BOOT_LINE="dhcp-boot=tag:!ipxe,tag:!efi-x86_64,tag:!bios,ipxe.efi,,${PXE_SERVER_IP}"
+    else
+        PXE_FALLBACK_EFI_BOOT_LINE="# Fallback EFI support disabled: ipxe.efi not found"
+        shell_warn "No fallback EFI iPXE binary was found; non-x86_64 EFI clients will be unsupported."
+    fi
+}
+
+pxe_render_dnsmasq_conf() {
+    local dhcp_range_line dhcp_host_line no_dhcp_interface_line
+
+    case "$PXE_DHCP_MODE" in
+        proxy)
+            dhcp_range_line="dhcp-range=${PXE_SERVER_NETWORK},proxy,${PXE_SERVER_NETMASK}"
+            dhcp_host_line="# dhcp-host disabled in proxy mode"
+            no_dhcp_interface_line="# full DHCP enabled in proxy mode"
+            ;;
+        exclusive)
+            local network_int range_start range_end
+            network_int="$(pxe_ipv4_to_int "$PXE_SERVER_NETWORK")"
+            range_start="$(pxe_int_to_ipv4 $(( network_int + 100 )))"
+            range_end="$(pxe_int_to_ipv4 $(( network_int + 200 )))"
+            dhcp_range_line="dhcp-range=${range_start},${range_end},${PXE_SERVER_NETMASK},12h"
+            dhcp_host_line="dhcp-host=88:88:88:88:87:88,${PXE_CLIENT_IP},infinite"
+            no_dhcp_interface_line="# full DHCP enabled in exclusive mode"
+            ;;
+        none)
+            dhcp_range_line="# DHCP range disabled in TFTP-only mode"
+            dhcp_host_line="# dhcp-host disabled in TFTP-only mode"
+            no_dhcp_interface_line="no-dhcp-interface=${PXE_INTERFACE}"
+            ;;
+    esac
+
+    install -d -m 755 /etc/dnsmasq.d
+    pxe_render_template \
+        "${PXE_BOOT_DIR}/pxe-physical.conf" \
+        "/etc/dnsmasq.d/pxe-physical.conf" \
+        "INTERFACE=${PXE_INTERFACE}" \
+        "SERVER_IP=${PXE_SERVER_IP}" \
+        "CLIENT_IP=${PXE_CLIENT_IP}" \
+        "TFTP_ROOT=${PXE_TFTP_ROOT}" \
+        "DHCP_RANGE_LINE=${dhcp_range_line}" \
+        "DHCP_HOST_LINE=${dhcp_host_line}" \
+        "NO_DHCP_INTERFACE_LINE=${no_dhcp_interface_line}" \
+        "BIOS_BOOT_LINE=${PXE_BIOS_BOOT_LINE}" \
+        "FALLBACK_EFI_BOOT_LINE=${PXE_FALLBACK_EFI_BOOT_LINE}"
+}
+
+pxe_render_boot_assets() {
+    local grub_cfg boot_ipxe autoexec_ipxe
+    grub_cfg="$(mktemp /tmp/grub-embedded.XXXXXX.cfg)"
+    boot_ipxe="$(mktemp /tmp/boot.XXXXXX.ipxe)"
+    autoexec_ipxe="$(mktemp /tmp/autoexec.XXXXXX.ipxe)"
+
+    local net_default_ip_line
+    if [[ -n "${PXE_CLIENT_IP:-}" ]]; then
+        net_default_ip_line="set net_default_ip=${PXE_CLIENT_IP}"
+    else
+        net_default_ip_line="# set net_default_ip is intentionally omitted"
+    fi
+
+    pxe_render_template \
+        "${PXE_BOOT_DIR}/grub-embedded.cfg" \
+        "$grub_cfg" \
+        "NET_DEFAULT_IP_LINE=${net_default_ip_line}" \
+        "SERVER_IP=${PXE_SERVER_IP}"
+
+    grub-mkimage -o "${PXE_TFTP_ROOT}/grubx64.efi" -O x86_64-efi \
+        -p "" \
+        -c "$grub_cfg" \
+        normal configfile tftp net boot multiboot multiboot2 \
+        efinet linux linux16 serial terminal \
+        echo cat ls test
+
+    pxe_render_template \
+        "${PXE_BOOT_DIR}/boot.ipxe" \
+        "$boot_ipxe" \
+        "SERVER_IP=${PXE_SERVER_IP}"
+
+    if [[ -f "${PXE_BOOT_DIR}/autoexec.ipxe" ]]; then
+        pxe_render_template \
+            "${PXE_BOOT_DIR}/autoexec.ipxe" \
+            "$autoexec_ipxe" \
+            "SERVER_IP=${PXE_SERVER_IP}"
+    else
+        cp "$boot_ipxe" "$autoexec_ipxe"
+    fi
+
+    install -m 0644 "$boot_ipxe" "${PXE_TFTP_ROOT}/boot.ipxe"
+    install -m 0644 "$autoexec_ipxe" "${PXE_TFTP_ROOT}/autoexec.ipxe"
+    rm -f "$grub_cfg" "$boot_ipxe" "$autoexec_ipxe"
+}
+
+pxe_stop_conflicting_services() {
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop dnsmasq 2>/dev/null || true
+        systemctl stop tftpd-hpa 2>/dev/null || true
+        systemctl disable tftpd-hpa 2>/dev/null || true
+    fi
+}
+
+pxe_start_service() {
+    pxe_require_command dnsmasq
+    pxe_require_command systemctl
+
+    if ! dnsmasq --test >/dev/null 2>&1; then
+        dnsmasq --test || true
+        shell_die "dnsmasq configuration test failed."
+    fi
+
+    systemctl enable dnsmasq >/dev/null 2>&1 || true
+    systemctl restart dnsmasq
+    systemctl is-active --quiet dnsmasq || shell_die "dnsmasq failed to start."
+}
+
+pxe_stop_service() {
+    pxe_require_command systemctl
+    systemctl stop dnsmasq 2>/dev/null || true
+}
+
+pxe_print_port_status() {
+    if command -v ss >/dev/null 2>&1; then
+        ss -lun | awk 'NR==1 || /:(67|69|4011)[[:space:]]/'
+    fi
+}
+
+pxe_show_status() {
+    pxe_check_network_interface
+
+    echo "PXE status"
+    echo "=========="
+    echo "Interface : ${PXE_INTERFACE}"
+    echo "Server IP : ${PXE_SERVER_IP}"
+    echo "Subnet    : ${PXE_SERVER_NETWORK}/${PXE_SERVER_PREFIX}"
+    echo "TFTP root : ${PXE_TFTP_ROOT}"
+    echo
+
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet dnsmasq; then
+        echo "dnsmasq   : running"
+    else
+        echo "dnsmasq   : stopped"
+    fi
+
+    if [[ -f /etc/dnsmasq.d/pxe-physical.conf ]]; then
+        echo "Config    : /etc/dnsmasq.d/pxe-physical.conf"
+    else
+        echo "Config    : missing"
+    fi
+
+    for file in ipxe-mb.efi undionly.kpxe ipxe.efi boot.ipxe autoexec.ipxe grubx64.efi grub.cfg kernel; do
+        if [[ -f "${PXE_TFTP_ROOT}/${file}" ]]; then
+            printf 'File      : %s\n' "$file"
+        fi
+    done
+
+    echo
+    pxe_print_port_status || true
+}
+
+pxe_clean_environment() {
+    pxe_stop_service
+    rm -f /etc/dnsmasq.d/pxe-physical.conf
+
+    if [[ -d "$PXE_TFTP_ROOT" ]]; then
+        if [[ "$PXE_ASSUME_YES" -eq 1 ]] || shell_prompt_confirm "Delete TFTP root ${PXE_TFTP_ROOT}? [y/N] "; then
+            rm -rf "$PXE_TFTP_ROOT"
+            shell_info "Removed TFTP root: ${PXE_TFTP_ROOT}"
+        else
+            shell_info "Kept TFTP root: ${PXE_TFTP_ROOT}"
+        fi
+    fi
+}
+
+pxe_install() {
+    pxe_require_root
+    pxe_validate_mode
+    pxe_require_file "${PXE_BOOT_DIR}/pxe-physical.conf"
+    pxe_require_file "${PXE_BOOT_DIR}/grub-embedded.cfg"
+    pxe_require_file "${PXE_BOOT_DIR}/boot.ipxe"
+    pxe_require_file "${PXE_BOOT_DIR}/autoexec.ipxe"
+    pxe_require_file "${PXE_BOOT_DIR}/ipxe-mb.efi"
+
+    pxe_install_packages
+    pxe_check_network_interface
+    if [[ -n "${PXE_KERNEL_FILE:-}" ]]; then
+        shell_warn "--kernel is ignored by pxe now; deploy only prepares PXE service and bootloader files."
+    fi
+    pxe_stop_conflicting_services
+    pxe_ensure_dnsmasq_conf_dir
+    pxe_prepare_tftp_directory
+    pxe_render_dnsmasq_conf
+    pxe_render_boot_assets
+    pxe_start_service
+
+    shell_info "Interface: ${PXE_INTERFACE}"
+    shell_info "Server IP: ${PXE_SERVER_IP}"
+    shell_info "Subnet   : ${PXE_SERVER_NETWORK}/${PXE_SERVER_PREFIX}"
+    shell_info "TFTP root: ${PXE_TFTP_ROOT}"
+    shell_info "PXE deployment completed."
+}
+
+pxe_main() {
+    pxe_parse_args "$@"
+
+    case "$PXE_ACTION" in
+        help) pxe_usage ;;
+        install) pxe_install ;;
+        start)
+            pxe_require_root
+            pxe_check_network_interface
+            pxe_start_service
+            ;;
+        stop)
+            pxe_require_root
+            pxe_stop_service
+            ;;
+        clean)
+            pxe_require_root
+            pxe_clean_environment
+            ;;
+        status) pxe_show_status ;;
+    esac
 }
 
 shell_get_org_and_pat() {
@@ -741,7 +1230,7 @@ shell_generate_compose_file() {
             "      BOARD_POWER_RESET: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB4 0 && sleep 2 && mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB4 1\"" \
             "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB5\"" \
             "      BOARD_COMM_UART_BAUD: \"115200\"" \
-            "      BIN_DIR: \"/home/runner/test/x86_64-pc\"" \
+            "      BIN_DIR: \"/home/$(whoami)/test/x86_64-pc\"" \
             "${extra_env_x86_64[@]}" \
             "    volumes:" \
             "      - /home/$(whoami)/test/x86_64-pc:/home/runner/tftp" \
@@ -991,7 +1480,6 @@ docker_runner_register() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    DC=$(docker_pick_compose)
     CMD="${1:-help}"; shift || true
     case "$CMD" in
         # ./runner.sh help|-h|--help
@@ -999,8 +1487,14 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             shell_usage
             ;;
 
+        # ./runner.sh pxe ...
+        pxe)
+            pxe_main "$@"
+            ;;
+
         # ./runner.sh ps|ls|list|status
         ps|ls|list|status)
+            DC=$(docker_pick_compose)
             shell_get_org_and_pat
             echo "--------------------------------- Containers -----------------------------------------"
             docker_print_existing_containers_status
@@ -1022,6 +1516,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
         # ./runner.sh init -n|--count N
         init)
+            DC=$(docker_pick_compose)
             count=0
             if [[ "${1:-}" == "-n" || "${1:-}" == "--count" ]]; then
                 shift
@@ -1049,6 +1544,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         
         # ./runner.sh compose
         compose)
+            DC=$(docker_pick_compose)
             cont_count=0
             cont_list="$(docker_list_existing_containers)"
             if [[ -n "$cont_list" ]]; then cont_count=$(echo "$cont_list" | wc -l | tr -d ' '); fi
@@ -1074,6 +1570,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
         # ./runner.sh register [${RUNNER_NAME_PREFIX}runner-<id> ...]
         register)
+            DC=$(docker_pick_compose)
             REG_TOKEN="$(shell_get_reg_token)"
             shell_update_compose_file "RUNNER_TOKEN" "$REG_TOKEN"
 
@@ -1088,6 +1585,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
         # ./runner.sh start [${RUNNER_NAME_PREFIX}runner-<id> ...]
         start)
+            DC=$(docker_pick_compose)
             if [[ $# -ge 1 ]]; then
                 ids=()
                 for s in "$@"; do
@@ -1118,6 +1616,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
         # ./runner.sh stop [${RUNNER_NAME_PREFIX}runner-<id> ...]
         stop)
+            DC=$(docker_pick_compose)
             if [[ $# -ge 1 ]]; then
                 ids=()
                 for s in "$@"; do
@@ -1148,6 +1647,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
         # ./runner.sh restart [${RUNNER_NAME_PREFIX}runner-<id> ...]
         restart)
+            DC=$(docker_pick_compose)
             if [[ $# -ge 1 ]]; then
                 ids=()
                 for s in "$@"; do
@@ -1178,6 +1678,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
         # ./runner.sh log ${RUNNER_NAME_PREFIX}runner-<id>
         log)
+            DC=$(docker_pick_compose)
             [[ $# -eq 1 ]] || shell_die "Usage: ./runner.sh logs ${RUNNER_NAME_PREFIX}runner-<id>"
 
             docker_container_exists "$1" || shell_die "Container $1 not found"
@@ -1192,6 +1693,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
         # ./runner.sh rm|remove|delete [${RUNNER_NAME_PREFIX}runner-<id> ...] [-y|--yes]
         rm|remove|delete)
+            DC=$(docker_pick_compose)
             shell_get_org_and_pat
             if [[ "$#" -eq 0 || "$1" == "-y" || "$1" == "--yes" ]]; then
                 if [[ "$#" -ge 1 ]]; then
@@ -1240,6 +1742,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
         # ./runner.sh purge [-y|--yes]
         purge)
+            DC=$(docker_pick_compose)
             REG_TOKEN="$(shell_get_reg_token)"
             if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; then
                 shell_delete_all_execute ""
@@ -1261,6 +1764,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
         # ./runner.sh image
         image)
+            DC=$(docker_pick_compose)
             if [[ ! -f Dockerfile ]]; then
                 shell_die "Dockerfile not found in current directory!"
             fi
