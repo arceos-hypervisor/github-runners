@@ -15,7 +15,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        build-essential \
        pkg-config \
+       cmake \
        git \
+       tftpd-hpa \
        ca-certificates \
        binfmt-support \
        dosfstools \
@@ -55,8 +57,14 @@ RUN apt-get update \
        python3-pip \
        python3-tomli \
        python3-sphinx \
+       clang \
+       libclang-dev \
+       llvm-dev \
        ninja-build \
        libslirp0 \
+    && libclang_so="$(find /usr/lib -path '*/libclang.so' | head -n1)" \
+    && test -n "$libclang_so" \
+    && ln -sfn "$(dirname "$libclang_so")" /usr/lib/libclang-runtime \
     && rm -rf /var/lib/apt/lists/*
 
 # Build and install QEMU 10.1.2 from source 
@@ -80,6 +88,25 @@ RUN mkdir -p /tmp/qemu-build \
 RUN usermod -aG dialout runner
 RUN usermod -aG kvm runner
 
+# Install prebuilt musl cross toolchains
+RUN set -eux; \
+    mkdir -p /env; \
+    cd /env; \
+    wget https://musl.cc/aarch64-linux-musl-cross.tgz; \
+    wget https://musl.cc/riscv64-linux-musl-cross.tgz; \
+    wget https://musl.cc/x86_64-linux-musl-cross.tgz; \
+    wget https://github.com/arceos-org/setup-musl/releases/download/prebuilt/loongarch64-linux-musl-cross.tgz; \
+    tar zxf aarch64-linux-musl-cross.tgz -C /env; \
+    tar zxf riscv64-linux-musl-cross.tgz -C /env; \
+    tar zxf x86_64-linux-musl-cross.tgz -C /env; \
+    tar zxf loongarch64-linux-musl-cross.tgz -C /env; \
+    printf '%s\n' \
+      '' \
+      '# musl cross toolchains' \
+      'export PATH=/env/x86_64-linux-musl-cross/bin:/env/aarch64-linux-musl-cross/bin:/env/riscv64-linux-musl-cross/bin:/env/loongarch64-linux-musl-cross/bin:$PATH' \
+      >> /home/runner/.bashrc; \
+    chown runner:runner /home/runner/.bashrc
+
 # 多组织共享硬件锁：runner-wrapper 用于多 org 共享同一硬件时的并发控制（Job 级别锁）
 COPY runner-wrapper /home/runner/runner-wrapper
 RUN chmod +x /home/runner/runner-wrapper/runner-wrapper.sh \
@@ -90,7 +117,8 @@ RUN chmod +x /home/runner/runner-wrapper/runner-wrapper.sh \
 USER runner
 
 #  Rust development for runner user
-ENV PATH=/home/runner/.cargo/bin:$PATH \
+ENV PATH=/env/x86_64-linux-musl-cross/bin:/env/aarch64-linux-musl-cross/bin:/env/riscv64-linux-musl-cross/bin:/env/loongarch64-linux-musl-cross/bin:/home/runner/.cargo/bin:$PATH \
+    LIBCLANG_PATH=/usr/lib/libclang-runtime \
     RUST_VERSION=nightly
 
 RUN set -eux; \
