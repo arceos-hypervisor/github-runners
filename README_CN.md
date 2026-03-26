@@ -54,7 +54,7 @@ cp .env.example .env
 | `./runner.sh rm [runner-<id> ...] [-y]` | 取消注册并删除容器；`-y` 跳过确认 |
 | `./runner.sh purge [-y]` | 删除容器并移除生成文件（`docker-compose.yml`、缓存等） |
 
-> **注意**：`init` 命令默认会创建两个基于硬件的 Runner（phytiumpi 和 roc-rk3568-pc），此行为不受 `-n` 参数控制。
+> **注意**：`init` 命令默认会创建三个基于硬件的 Runner（phytiumpi、roc-rk3568-pc 和 x86_64），此行为不受 `-n` 参数控制。
 
 ## 配置说明
 
@@ -68,7 +68,7 @@ cp .env.example .env
 name:label1[,label2];name2:label1
 ```
 
-示例：`phytiumpi:arm64,phytiumpi;roc-rk3568-pc:arm64,roc-rk3568-pc`
+示例：`phytiumpi:arm64,phytiumpi;roc-rk3568-pc:arm64,roc-rk3568-pc;x86_64:x86_64`
 
 开发板实例将仅使用 `BOARD_RUNNERS` 中定义的标签，不会追加全局 `RUNNER_LABELS`。
 
@@ -98,7 +98,7 @@ name:label1[,label2];name2:label1
 
 ### 配置方法
 
-使用 **runner.sh** 生成的环境，板子 runner 默认启用 wrapper 并挂载共享锁目录 `/tmp/github-runner-locks`。优先使用板子级环境变量（如 `RUNNER_RESOURCE_ID_PHYTIUMPI`），否则使用默认值（phytiumpi: `board-phytiumpi`，roc-rk3568-pc: `board-roc-rk3568-pc`）。
+使用 **runner.sh** 生成的环境，板子 runner 默认启用 wrapper 并挂载共享锁目录 `/tmp/github-runner-locks`。优先使用板子级环境变量（如 `RUNNER_RESOURCE_ID_PHYTIUMPI`），否则使用默认值（phytiumpi: `board-phytiumpi`，roc-rk3568-pc: `board-roc-rk3568-pc`，x86_64-pc: `board-x86_64-pc`）。
 
 如果要在**多组织中共享同一块板时**，则只需要在各自的 `.env` 中为该板设置相同的锁 ID。这样，即使两个组织的 runner 容器同时收到 job，也会通过文件锁排队执行，避免硬件冲突。
 

@@ -1,0 +1,6 @@
+#!ipxe
+echo ===================================
+echo   ArceOS Boot via GRUB
+echo ===================================
+echo Loading GRUB EFI bootloader...
+chain tftp://__SERVER_IP__/grubx64.efi

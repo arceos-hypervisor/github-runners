@@ -7,14 +7,15 @@ cd "$(dirname "$0")"
 
 echo "========== 1. 验证板子锁 ID（不回退到 RUNNER_RESOURCE_ID）=========="
 export RUNNER_RESOURCE_ID=global-should-not-be-used
-unset RUNNER_RESOURCE_ID_PHYTIUMPI RUNNER_RESOURCE_ID_ROC_RK3568_PC
+unset RUNNER_RESOURCE_ID_PHYTIUMPI RUNNER_RESOURCE_ID_ROC_RK3568_PC RUNNER_RESOURCE_ID_X86_64
 # 加载 .env 会覆盖，所以这里直接按 runner.sh 逻辑算板子默认
 res_phytiumpi="${RUNNER_RESOURCE_ID_PHYTIUMPI:-board-phytiumpi}"
 res_roc="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-board-roc-rk3568-pc}"
-if [[ "$res_phytiumpi" == "board-phytiumpi" && "$res_roc" == "board-roc-rk3568-pc" ]]; then
+res_x86_64="${RUNNER_RESOURCE_ID_X86_64_PC:-board-x86_64-pc}"
+if [[ "$res_phytiumpi" == "board-phytiumpi" && "$res_roc" == "board-roc-rk3568-pc" && "$res_x86_64" == "board-x86_64-pc" ]]; then
   echo "  [OK] 未设板子变量时使用 per-board 默认，未使用 global RUNNER_RESOURCE_ID"
 else
-  echo "  [FAIL] res_phytiumpi=$res_phytiumpi res_roc=$res_roc"
+  echo "  [FAIL] res_phytiumpi=$res_phytiumpi res_roc=$res_roc res_x86_64=$res_x86_64"
   exit 1
 fi
 
