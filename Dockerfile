@@ -18,6 +18,7 @@ RUN apt-get update \
        cmake \
        git \
        tftpd-hpa \
+       iproute2 \
        ca-certificates \
        binfmt-support \
        dosfstools \

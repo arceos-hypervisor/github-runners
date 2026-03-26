@@ -1260,13 +1260,15 @@ shell_generate_compose_file() {
             "      - -c" \
             "      - |" \
             "        set -e" \
-            "        mkdir -p /home/runner/board" \
+            "        mkdir -p /home/runner/board /home/runner/tftp" \
             "        cd /home/runner/board" \
             "        echo \"Attempting to download visionfive2 files...\"" \
             "        if curl -fsSL --connect-timeout 30 --max-time 300 https://github.com/user-attachments/files/26230373/visionfive2.tar.gz -o visionfive2.tar.gz; then" \
             "            echo \"Download successful, extracting...\"" \
             "            tar -xzf visionfive2.tar.gz" \
             "            echo \"Extraction completed\"" \
+            "            echo \"Syncing visionfive2 files to /home/runner/tftp...\"" \
+            "            find . -mindepth 1 -maxdepth 1 ! -name visionfive2.tar.gz -exec cp -a {} /home/runner/tftp/ \\;" \
             "        else" \
             "            echo \"Download failed, continuing with existing files if any...\"" \
             "        fi" \
@@ -1293,6 +1295,7 @@ shell_generate_compose_file() {
             "      BOARD_DTB: \"/home/runner/board/jh7110-visionfive-v2.dtb\"" \
             "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB6\"" \
             "      BOARD_COMM_UART_BAUD: \"115200\"" \
+            "      BOARD_COMM_NET_IFACE: \"eno2np1\"" \
             "      TFTP_DIR: \"visionfive2\"" \
             "      BIN_DIR: \"/home/runner/test/visionfive2\"" \
             "${extra_env_visionfive2[@]}" \
