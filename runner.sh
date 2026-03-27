@@ -101,16 +101,20 @@ shell_usage() {
   printf "  %-${COLW}s %s\n" "./runner.sh ps|ls|list|status" "Show container status and registered Runner status"
   echo
 
-  echo "4. Deletion commands:"
+  echo "4. Lock watcher (Cancel 后自动释放板卡锁):"
+  printf "  %-${COLW}s %s\n" "./runner.sh watcher [resource]" "Start lock-watcher (uses same .env; requires RUNNER_LOCK_MONITOR_TOKEN)"
+  echo
+
+  echo "5. Deletion commands:"
   printf "  %-${COLW}s %s\n" "./runner.sh rm|remove|delete [${RUNNER_NAME_PREFIX}runner-<id> ...]" "Delete specified instances; no args will delete all (confirmation required, -y to skip)"
   printf "  %-${COLW}s %s\n" "./runner.sh purge [-y]" "On top of remove, also delete the dynamically generated docker-compose.yml"
   echo
 
-  echo "5. Image management commands:"
+  echo "6. Image management commands:"
   printf "  %-${COLW}s %s\n" "./runner.sh image" "Rebuild Docker image based on Dockerfile"
   echo
 
-  echo "6. Help"
+  echo "7. Help"
   printf "  %-${COLW}s %s\n" "./runner.sh help" "Show this help"
   echo
 
@@ -126,6 +130,7 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_ROC_RK3568_PC" "Lock ID for roc-rk3568-pc board (default: board-roc-rk3568-pc); same ID = serial"
   printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_DIR" "Lock dir in container (default /tmp/github-runner-locks)"
   printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_HOST_PATH" "Lock dir on host for bind mount (default /tmp/github-runner-locks)"
+  printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_MONITOR_TOKEN" "Fine-grained PAT, Actions read-only (required for watcher)"
   echo
   echo "Example workflow runs-on: runs-on: [self-hosted, linux, docker]"
 
@@ -703,6 +708,34 @@ shell_generate_compose_file() {
             "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data:/home/runner" \
             "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:/etc/udev/rules.d" \
             "" >> "${COMPOSE_FILE}"
+
+        # lock-watcher：当配置了 RUNNER_LOCK_MONITOR_TOKEN 时自动加入，与 start/stop 一起启停
+        if [[ -n "${RUNNER_LOCK_MONITOR_TOKEN:-}" ]]; then
+            local watcher_resource_ids=()
+            [[ -n "$res_phytiumpi" ]] && watcher_resource_ids+=("$res_phytiumpi")
+            [[ -n "$res_roc" ]] && watcher_resource_ids+=("$res_roc")
+            local watcher_ids_str="${watcher_resource_ids[*]}"
+            printf '%s\n' \
+                "  # lock-watcher：Cancel workflow 后自动清锁，与锁机制配套" \
+                "  ${RUNNER_NAME_PREFIX}lock-watcher:" \
+                "    image: alpine:3.19" \
+                "    container_name: \"${RUNNER_NAME_PREFIX}lock-watcher\"" \
+                "    restart: unless-stopped" \
+                "    command:" \
+                "      - /bin/sh" \
+                "      - -c" \
+                "      - \"apk add --no-cache bash curl jq && exec /watcher/lock-watcher.sh\"" \
+                "    environment:" \
+                "      ORG: \"${ORG}\"" \
+                "      REPO: \"${REPO}\"" \
+                "      GITHUB_TOKEN: \"\${RUNNER_LOCK_MONITOR_TOKEN}\"" \
+                "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"" \
+                "      RUNNER_RESOURCE_IDS: \"${watcher_ids_str}\"" \
+                "    volumes:" \
+                "      - ./runner-wrapper:/watcher:ro" \
+                "      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}" \
+                "" >> "${COMPOSE_FILE}"
+        fi
     fi
 
     # 生成 volumes
@@ -966,6 +999,30 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             echo
             ;;
 
+        # ./runner.sh watcher [resource]
+        watcher)
+            shell_get_org_and_pat
+            [[ -n "${RUNNER_LOCK_MONITOR_TOKEN:-}" ]] || shell_die "RUNNER_LOCK_MONITOR_TOKEN is required for watcher (use Fine-grained PAT with Actions: Read-only)."
+            export GITHUB_TOKEN="${RUNNER_LOCK_MONITOR_TOKEN}"
+            export ORG REPO
+            export RUNNER_LOCK_DIR="${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
+            if [[ -n "${1:-}" ]]; then
+              export RUNNER_RESOURCE_IDS="$1"
+            else
+              ids=()
+              [[ -n "${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}" ]] && ids+=("${RUNNER_RESOURCE_ID_ROC_RK3568_PC}")
+              [[ -n "${RUNNER_RESOURCE_ID_PHYTIUMPI:-}" ]] && ids+=("${RUNNER_RESOURCE_ID_PHYTIUMPI}")
+              if [[ ${#ids[@]} -eq 0 ]]; then
+                shell_die "No board resource ID set (RUNNER_RESOURCE_ID_ROC_RK3568_PC / RUNNER_RESOURCE_ID_PHYTIUMPI). Set one in .env or pass: ./runner.sh watcher <resource-id>"
+              fi
+              export RUNNER_RESOURCE_IDS="${ids[*]}"
+            fi
+            WATCHER_SCRIPT="$(cd "$(dirname "$0")" && pwd)/runner-wrapper/lock-watcher.sh"
+            [[ -x "${WATCHER_SCRIPT}" ]] || shell_die "lock-watcher.sh not found or not executable: ${WATCHER_SCRIPT}"
+            shell_info "Starting lock-watcher for ${ORG}/${REPO}, resources=${RUNNER_RESOURCE_IDS}"
+            exec "${WATCHER_SCRIPT}"
+            ;;
+
         # ./runner.sh init -n|--count N
         init)
             count=0
@@ -1047,18 +1104,25 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     shell_info "No Runner containers to start!"
                     exit 0
                 fi
-            else
-                mapfile -t ids < <(docker_list_existing_containers) || ids=()
-                if [[ ${#ids[@]} -eq 0 ]]; then
-                    shell_info "No Runner containers to start!"
-                    exit 0
+                shell_info "Starting ${#ids[@]} container(s): ${ids[*]}"
+                if [[ -f "$COMPOSE_FILE" ]]; then
+                    $DC -f "$COMPOSE_FILE" up -d "${ids[@]}"
+                else
+                    docker start "${ids[@]}"
                 fi
-            fi
-            shell_info "Starting ${#ids[@]} container(s): ${ids[*]}"
-            if [[ -f "$COMPOSE_FILE" ]]; then
-                $DC -f "$COMPOSE_FILE" up -d "${ids[@]}"
             else
-                docker start "${ids[@]}"
+                if [[ -f "$COMPOSE_FILE" ]]; then
+                    shell_info "Starting all services (runners + lock-watcher if configured)"
+                    $DC -f "$COMPOSE_FILE" up -d
+                else
+                    mapfile -t ids < <(docker_list_existing_containers) || ids=()
+                    if [[ ${#ids[@]} -eq 0 ]]; then
+                        shell_info "No Runner containers to start!"
+                        exit 0
+                    fi
+                    shell_info "Starting ${#ids[@]} container(s): ${ids[*]}"
+                    docker start "${ids[@]}"
+                fi
             fi
             ;;
 
@@ -1077,18 +1141,25 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     shell_info "No Runner containers to stop!"
                     exit 0
                 fi
-            else
-                mapfile -t ids < <(docker_list_existing_containers) || ids=()
-                if [[ ${#ids[@]} -eq 0 ]]; then
-                    shell_info "No Runner containers to stop!"
-                    exit 0
+                shell_info "Stopping ${#ids[@]} container(s): ${ids[*]}"
+                if [[ -f "$COMPOSE_FILE" ]]; then
+                    $DC -f "$COMPOSE_FILE" stop "${ids[@]}"
+                else
+                    docker stop "${ids[@]}"
                 fi
-            fi
-            shell_info "Stopping ${#ids[@]} container(s): ${ids[*]}"
-            if [[ -f "$COMPOSE_FILE" ]]; then
-                $DC -f "$COMPOSE_FILE" stop "${ids[@]}"
             else
-                docker stop "${ids[@]}"
+                if [[ -f "$COMPOSE_FILE" ]]; then
+                    shell_info "Stopping all services (runners + lock-watcher if configured)"
+                    $DC -f "$COMPOSE_FILE" stop
+                else
+                    mapfile -t ids < <(docker_list_existing_containers) || ids=()
+                    if [[ ${#ids[@]} -eq 0 ]]; then
+                        shell_info "No Runner containers to stop!"
+                        exit 0
+                    fi
+                    shell_info "Stopping ${#ids[@]} container(s): ${ids[*]}"
+                    docker stop "${ids[@]}"
+                fi
             fi
             ;;
 
@@ -1107,18 +1178,25 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     shell_info "No Runner containers to restart!"
                     exit 0
                 fi
-            else
-                mapfile -t ids < <(docker_list_existing_containers) || ids=()
-                if [[ ${#ids[@]} -eq 0 ]]; then
-                    shell_info "No Runner containers to restart!"
-                    exit 0
+                shell_info "Restarting ${#ids[@]} container(s): ${ids[*]}"
+                if [[ -f "$COMPOSE_FILE" ]]; then
+                    $DC -f "$COMPOSE_FILE" restart "${ids[@]}"
+                else
+                    docker restart "${ids[@]}"
                 fi
-            fi
-            shell_info "Restarting ${#ids[@]} container(s): ${ids[*]}"
-            if [[ -f "$COMPOSE_FILE" ]]; then
-                $DC -f "$COMPOSE_FILE" restart "${ids[@]}"
             else
-                docker restart "${ids[@]}"
+                if [[ -f "$COMPOSE_FILE" ]]; then
+                    shell_info "Restarting all services (runners + lock-watcher if configured)"
+                    $DC -f "$COMPOSE_FILE" restart
+                else
+                    mapfile -t ids < <(docker_list_existing_containers) || ids=()
+                    if [[ ${#ids[@]} -eq 0 ]]; then
+                        shell_info "No Runner containers to restart!"
+                        exit 0
+                    fi
+                    shell_info "Restarting ${#ids[@]} container(s): ${ids[*]}"
+                    docker restart "${ids[@]}"
+                fi
             fi
             ;;
 

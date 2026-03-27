@@ -18,16 +18,41 @@ LOCK_FILE="${LOCK_DIR}/${RESOURCE_ID}.lock"
 RELEASE_FILE="${LOCK_DIR}/${RESOURCE_ID}.${RUN_KEY}.release"
 HOLDER_PID_FILE="${LOCK_DIR}/${RESOURCE_ID}.holder"
 
-mkdir -p "${LOCK_DIR}"
-chmod 1777 "${LOCK_DIR}" || true
+if ! mkdir -p "${LOCK_DIR}" 2>/dev/null; then
+  echo "[$(date -Iseconds)] ❌ Cannot create lock dir ${LOCK_DIR}" >&2
+  exit 1
+fi
+chmod 1777 "${LOCK_DIR}" 2>/dev/null || true
+
+# 如果目录不可写，给出明确提示后退出
+if ! touch "${LOCK_DIR}/.write-test" 2>/dev/null; then
+  echo "[$(date -Iseconds)] ❌ Lock dir ${LOCK_DIR} is not writable by user $(id -un)." >&2
+  echo "[$(date -Iseconds)]    Fix on runner host: sudo chmod 1777 ${LOCK_DIR}" >&2
+  exit 1
+fi
+rm -f "${LOCK_DIR}/.write-test" || true
+
 # 清理当前 run 的残留释放标记，避免误判为可释放
 rm -f "${RELEASE_FILE}" || true
 
 # 打开锁文件并获取排他锁（阻塞等待）
 exec 200>"${LOCK_FILE}"
-chmod 666 "${LOCK_FILE}" || true
+chmod 666 "${LOCK_FILE}" 2>/dev/null || true
 echo "[$(date -Iseconds)] ⏳ Waiting for lock: ${RESOURCE_ID}" >&2
+# 后台每 10s 打印一次，便于在第二个 job 的日志中看到等待状态（避免在 echo 中嵌套括号与引号，防止部分 bash 误解析）
+(
+  i=0
+  while true; do
+    sleep 10
+    i=$((i + 10))
+    ts="$(date -Iseconds)"
+    printf '%s ⏳ Still waiting for lock: %s after %ss\n' "${ts}" "${RESOURCE_ID}" "${i}" >&2
+  done
+) &
+WAITER_PID=$!
 flock -x 200
+kill "${WAITER_PID}" 2>/dev/null || true
+wait "${WAITER_PID}" 2>/dev/null || true
 echo "[$(date -Iseconds)] ✅ Acquired lock for ${RESOURCE_ID}" >&2
 
 # 后台子进程继承 fd 200 并持有锁，等待 post-job 创建释放文件
@@ -38,7 +63,7 @@ echo "[$(date -Iseconds)] ✅ Acquired lock for ${RESOURCE_ID}" >&2
     "${RUNNER_NAME_SAFE}" \
     "${RUN_ID_SAFE}" \
     "${RUN_ATTEMPT_SAFE}" > "${HOLDER_PID_FILE}"
-  chmod 666 "${HOLDER_PID_FILE}" || true
+  chmod 666 "${HOLDER_PID_FILE}" 2>/dev/null || true
 
   while [ ! -f "${RELEASE_FILE}" ]; do
     sleep 1
