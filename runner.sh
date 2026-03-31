@@ -1263,7 +1263,7 @@ shell_generate_compose_file() {
             "        mkdir -p /home/runner/board" \
             "        cd /home/runner/board" \
             "        echo \"Attempting to download visionfive2 files...\"" \
-            "        if curl -fsSL --connect-timeout 30 --max-time 300 https://github.com/user-attachments/files/26230373/visionfive2.tar.gz -o visionfive2.tar.gz; then" \
+            "        if curl -fsSL --connect-timeout 30 --max-time 300 https://github.com/Starry-OS/board-config/releases/download/v0.1/visionfive2.tar.gz -o visionfive2.tar.gz; then" \
             "            echo \"Download successful, extracting...\"" \
             "            tar -xzf visionfive2.tar.gz" \
             "            echo \"Extraction completed\"" \

@@ -17,6 +17,7 @@ RUN apt-get update \
        pkg-config \
        cmake \
        git \
+       vim \
        tftpd-hpa \
        iproute2 \
        ca-certificates \
