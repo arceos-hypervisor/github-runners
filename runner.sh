@@ -151,6 +151,12 @@ shell_prompt_confirm() {
     [[ "$ans" == "y" || "$ans" == "Y" || "$ans" == "yes" || "$ans" == "YES" ]]
 }
 
+shell_detect_device_gid() {
+    local device_path="${1:-}"
+    [[ -n "$device_path" && -e "$device_path" ]] || return 1
+    stat -c '%g' "$device_path" 2>/dev/null
+}
+
 shell_get_org_and_pat() {
     # Fast path when both provided via env/.env
     if [[ -n "${ORG:-}" && -n "${GH_PAT:-}" ]]; then
@@ -526,12 +532,25 @@ shell_generate_compose_file() {
     local extra_env_phytiumpi=()
     local extra_env_roc=()
     local extra_proxy_env=()
+    local kvm_gid="${RUNNER_KVM_GID:-}"
     # 只有设置了相应的资源 ID，才为该类型 runner 添加锁相关环境变量
     [[ -n "$res_phytiumpi" ]] && extra_env_phytiumpi=("      RUNNER_RESOURCE_ID: \"$res_phytiumpi\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
     [[ -n "$res_roc" ]] && extra_env_roc=("      RUNNER_RESOURCE_ID: \"$res_roc\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
     [[ -n "${HTTP_PROXY:-}" ]] && extra_proxy_env+=("    HTTP_PROXY: \"${HTTP_PROXY}\"")
     [[ -n "${HTTPS_PROXY:-}" ]] && extra_proxy_env+=("    HTTPS_PROXY: \"${HTTPS_PROXY}\"")
     [[ -n "${NO_PROXY:-}" ]] && extra_proxy_env+=("    NO_PROXY: \"${NO_PROXY}\"")
+
+    # /dev/kvm 的权限检查是按数字 GID 生效
+    # 优先使用宿主机当前 /dev/kvm 的实际 GID，必要时允许通过 RUNNER_KVM_GID 覆盖
+    if [[ -z "$kvm_gid" ]]; then
+        kvm_gid="$(shell_detect_device_gid /dev/kvm || true)"
+    fi
+    if [[ -n "$kvm_gid" ]]; then
+        shell_info "Using /dev/kvm group id: ${kvm_gid}"
+    else
+        kvm_gid="993"
+        shell_warn "/dev/kvm gid not detected; falling back to legacy gid ${kvm_gid}. Set RUNNER_KVM_GID to override."
+    fi
 
     # ════════════════════════════════════════════════════════════════
     # 第四步：为两种板子 runner 类型准备卷挂载配置
@@ -585,7 +604,7 @@ shell_generate_compose_file() {
             "      - /dev/loop3:/dev/loop3" \
             "      - /dev/kvm:/dev/kvm" \
             "    group_add:" \
-            "      - 993" \
+            "      - ${kvm_gid}" \
             "    environment:" \
             "      <<: *runner_env" \
             "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-${i}\"" \
@@ -633,7 +652,7 @@ shell_generate_compose_file() {
             "      - /dev/ttyUSB0:/dev/ttyUSB0" \
             "      - /dev/ttyUSB1:/dev/ttyUSB1" \
             "    group_add:" \
-            "      - 993" \
+            "      - ${kvm_gid}" \
             "      - dialout" \
             "    environment:" \
             "      <<: *runner_env" \
@@ -689,7 +708,7 @@ shell_generate_compose_file() {
             "      - /dev/ttyUSB2:/dev/ttyUSB2" \
             "      - /dev/ttyUSB3:/dev/ttyUSB3" \
             "    group_add:" \
-            "      - 993" \
+            "      - ${kvm_gid}" \
             "      - dialout" \
             "    environment:" \
             "      <<: *runner_env" \
