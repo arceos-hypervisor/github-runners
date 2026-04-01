@@ -44,6 +44,7 @@ DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
 # 板子级：未设置时用本板默认值（同类型板串行、不同类型板并行）；多组织共享同一块板时显式设为相同 ID 即可
 RUNNER_RESOURCE_ID_PHYTIUMPI="${RUNNER_RESOURCE_ID_PHYTIUMPI:-}"
 RUNNER_RESOURCE_ID_ROC_RK3568_PC="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}"
+RUNNER_RESOURCE_ID_ORANGEPI="${RUNNER_RESOURCE_ID_ORANGEPI:-}"
 RUNNER_RESOURCE_ID_X86_64_PC="${RUNNER_RESOURCE_ID_X86_64_PC:-}"
 RUNNER_RESOURCE_ID_VISIONFIVE2="${RUNNER_RESOURCE_ID_VISIONFIVE2:-}"
 RUNNER_LOCK_DIR="${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
@@ -147,6 +148,7 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "RUNNER_CUSTOM_IMAGE" "Image tag used for auto-build (can override)"
   printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_PHYTIUMPI" "Lock ID for phytiumpi board (default: board-phytiumpi); same ID = serial across runners"
   printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_ROC_RK3568_PC" "Lock ID for roc-rk3568-pc board (default: board-roc-rk3568-pc); same ID = serial"
+  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_ORANGEPI_5_PLUS" "Lock ID for roc-rk3568-pc board (default: board-orangepi-5-plus); same ID = serial"
   printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_X86_64_PC" "Lock ID for x86_64-pc board (default: board-x86_64-pc); same ID = serial"
   printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_VISIONFIVE2" "Lock ID for visionfive2 board (default: board-visionfive2); same ID = serial"
   printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_DIR" "Lock dir in container (default /tmp/github-runner-locks)"
@@ -988,6 +990,8 @@ shell_generate_compose_file() {
     local res_phytiumpi="${RUNNER_RESOURCE_ID_PHYTIUMPI:-board-phytiumpi}"
     # 硬件板 roc - 总是启用文件锁
     local res_roc="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-board-roc-rk3568-pc}"
+    # 硬件板 orangepi - 总是启用文件锁
+    local res_orangepi="${RUNNER_RESOURCE_ID_ORANGEPI:-board-orangepi}"
     # 硬件板 x86_64 - 总是启用文件锁
     local res_x86_64="${RUNNER_RESOURCE_ID_X86_64_PC:-board-x86_64-pc}"
     # 硬件板 visionfive2 - 总是启用文件锁
@@ -1001,11 +1005,13 @@ shell_generate_compose_file() {
     # 普通 runner 始终使用 /home/runner/run.sh（不经过 runner-wrapper）
     local runner_entrypoint_phytiumpi="/home/runner/run.sh"
     local runner_entrypoint_roc="/home/runner/run.sh"
+    local runner_entrypoint_orangepi="/home/runner/run.sh"
     local runner_entrypoint_x86_64="/home/runner/run.sh"
     local runner_entrypoint_visionfive2="/home/runner/run.sh"
     # 若设置了资源 ID，则改用 runner-wrapper 来处理文件锁
     [[ -n "$res_phytiumpi" ]] && runner_entrypoint_phytiumpi="/home/runner/runner-wrapper/runner-wrapper.sh"
     [[ -n "$res_roc" ]] && runner_entrypoint_roc="/home/runner/runner-wrapper/runner-wrapper.sh"
+    [[ -n "$res_orangepi" ]] && runner_entrypoint_orangepi="/home/runner/runner-wrapper/runner-wrapper.sh"
     [[ -n "$res_x86_64" ]] && runner_entrypoint_x86_64="/home/runner/runner-wrapper/runner-wrapper.sh"
     [[ -n "$res_visionfive2" ]] && runner_entrypoint_visionfive2="/home/runner/runner-wrapper/runner-wrapper.sh"
 
@@ -1021,12 +1027,14 @@ shell_generate_compose_file() {
     # 原因：两种板子 runner 都可能需要文件锁机制
     local extra_env_phytiumpi=()
     local extra_env_roc=()
+    local extra_env_orangepi=()
     local extra_env_x86_64=()
     local extra_env_visionfive2=()
     local extra_proxy_env=()
     # 只有设置了相应的资源 ID，才为该类型 runner 添加锁相关环境变量
     [[ -n "$res_phytiumpi" ]] && extra_env_phytiumpi=("      RUNNER_RESOURCE_ID: \"$res_phytiumpi\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
     [[ -n "$res_roc" ]] && extra_env_roc=("      RUNNER_RESOURCE_ID: \"$res_roc\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
+    [[ -n "$res_orangepi" ]] && extra_env_orangepi=("      RUNNER_RESOURCE_ID: \"$res_orangepi\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
     [[ -n "$res_x86_64" ]] && extra_env_x86_64=("      RUNNER_RESOURCE_ID: \"$res_x86_64\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
     [[ -n "$res_visionfive2" ]] && extra_env_visionfive2=("      RUNNER_RESOURCE_ID: \"$res_visionfive2\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
     [[ -n "${HTTP_PROXY:-}" ]] && extra_proxy_env+=("    HTTP_PROXY: \"${HTTP_PROXY}\"")
@@ -1041,11 +1049,13 @@ shell_generate_compose_file() {
     # 原因：文件锁机制需要在主机和容器间共享锁文件
     local extra_vol_phytiumpi=""
     local extra_vol_roc=""
+    local extra_vol_orangepi=""
     local extra_vol_x86_64=""
     local extra_vol_visionfive2=""
     # 只有设置了相应的资源 ID，才为该类型 runner 挂载锁文件目录
     [[ -n "$res_phytiumpi" ]] && extra_vol_phytiumpi="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
     [[ -n "$res_roc" ]] && extra_vol_roc="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
+    [[ -n "$res_orangepi" ]] && extra_vol_orangepi="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
     [[ -n "$res_x86_64" ]] && extra_vol_x86_64="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
     [[ -n "$res_visionfive2" ]] && extra_vol_visionfive2="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
 
@@ -1119,7 +1129,7 @@ shell_generate_compose_file() {
             "        cd /home/runner/board" \
             "        # 尝试下载文件，如果失败则跳过" \
             "        echo \"Attempting to download phytiumpi files...\"" \
-            "        if curl -fsSL --connect-timeout 30 --max-time 300 https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.18/phytiumpi_linux.tar.gz -o phytiumpi_linux.tar.gz; then" \
+            "        if curl -fsSL --connect-timeout 30 --max-time 300 https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.23/phytiumpi_linux.tar.gz -o phytiumpi_linux.tar.gz; then" \
             "            echo \"Download successful, extracting...\"" \
             "            tar -xzf phytiumpi_linux.tar.gz" \
             "            echo \"Extraction completed\"" \
@@ -1175,7 +1185,7 @@ shell_generate_compose_file() {
             "        cd /home/runner/board" \
             "        # 尝试下载文件，如果失败则跳过" \
             "        echo \"Attempting to download roc-rk3568-pc files...\"" \
-            "        if curl -fsSL --connect-timeout 30 --max-time 300 https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.18/roc-rk3568-pc_linux.tar.gz -o roc-rk3568-pc_linux.tar.gz; then" \
+            "        if curl -fsSL --connect-timeout 30 --max-time 300 https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.23/roc-rk3568-pc_linux.tar.gz -o roc-rk3568-pc_linux.tar.gz; then" \
             "            echo \"Download successful, extracting...\"" \
             "            tar -xzf roc-rk3568-pc_linux.tar.gz" \
             "            echo \"Extraction completed\"" \
@@ -1211,6 +1221,61 @@ shell_generate_compose_file() {
             "$extra_vol_roc" \
             "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data:/home/runner" \
             "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:/etc/udev/rules.d" \
+            "" >> "${COMPOSE_FILE}"
+
+        # orangepi-5-plus 板子配置
+        printf '%s\n' \
+            "  ${RUNNER_NAME_PREFIX}runner-orangepi-5-plus:" \
+            "    <<: *runner_base" \
+            "    container_name: \"${RUNNER_NAME_PREFIX}runner-orangepi-5-plus\"" \
+            "    command:" \
+            "      - /bin/bash" \
+            "      - -c" \
+            "      - |" \
+            "        set -e" \
+            "        mkdir -p /home/runner/board" \
+            "        cd /home/runner/board" \
+            "        # 尝试下载文件，如果失败则跳过" \
+            "        echo \"Attempting to download orangepi-5-plus files...\"" \
+            "        if curl -fsSL --connect-timeout 30 --max-time 300 https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.23/orangepi_linux.tar.gz -o orangepi_linux.tar.gz; then" \
+            "            echo \"Download successful, extracting...\"" \
+            "            tar -xzf orangepi_linux.tar.gz" \
+            "            echo \"Extraction completed\"" \
+            "        else" \
+            "            echo \"Download failed, continuing with existing files if any...\"" \
+            "        fi" \
+            "        ${runner_entrypoint_orangepi}" \
+            "    devices:" \
+            "      - /dev/loop-control:/dev/loop-control" \
+            "      - /dev/loop0:/dev/loop0" \
+            "      - /dev/loop1:/dev/loop1" \
+            "      - /dev/loop2:/dev/loop2" \
+            "      - /dev/loop3:/dev/loop3" \
+            "      - /dev/kvm:/dev/kvm" \
+            "      - /dev/ttyUSB8:/dev/ttyUSB8" \
+            "      - /dev/ttyUSB9:/dev/ttyUSB9" \
+            "    group_add:" \
+            "      - 993" \
+            "      - dialout" \
+            "    environment:" \
+            "      <<: *runner_env" \
+            "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-orangepi-5-plus\"" \
+            "      RUNNER_LABELS: \"orangepi-5-plus\"" \
+            "      BOARD_POWER_ON: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB8 1\"" \
+            "      BOARD_POWER_OFF: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB8 0\"" \
+            "      BOARD_POWER_RESET: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB8 0 && sleep 2 && mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB8 1\"" \
+            "      BOARD_DTB: \"/home/runner/board/orangepi-5-plus.dtb\"" \
+            "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB9\"" \
+            "      BOARD_COMM_UART_BAUD: \"1500000\"" \
+            "      BOARD_COMM_NET_IFACE: \"eno2np1\"" \
+            "      TFTP_DIR: \"orangepi\"" \
+            "      BIN_DIR: \"/home/runner/test/orangepi\"" \
+            "${extra_env_roc[@]}" \
+            "    volumes:" \
+            "      - ./runner-wrapper:/home/runner/runner-wrapper:ro" \
+            "$extra_vol_roc" \
+            "      - ${RUNNER_NAME_PREFIX}runner-orangepi-5-plus-data:/home/runner" \
+            "      - ${RUNNER_NAME_PREFIX}runner-orangepi-5-plus-udev-rules:/etc/udev/rules.d" \
             "" >> "${COMPOSE_FILE}"
 
         # x86_64 板子配置
@@ -1332,6 +1397,13 @@ shell_generate_compose_file() {
             "    name: ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data" \
             "  ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:" \
             "    name: ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules" >> "${COMPOSE_FILE}"
+
+        # 为 orangepi-5-plus 板子生成 volumes
+        printf '%s\n' \
+            "  ${RUNNER_NAME_PREFIX}runner-orangepi-5-plus-data:" \
+            "    name: ${RUNNER_NAME_PREFIX}runner-orangepi-5-plus-data" \
+            "  ${RUNNER_NAME_PREFIX}runner-orangepi-5-plus-udev-rules:" \
+            "    name: ${RUNNER_NAME_PREFIX}runner-orangepi-5-plus-udev-rules" >> "${COMPOSE_FILE}"
 
         # 为 x86_64 板子生成 volumes
         printf '%s\n' \
