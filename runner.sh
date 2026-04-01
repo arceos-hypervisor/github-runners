@@ -1267,9 +1267,9 @@ shell_generate_compose_file() {
             "      BOARD_DTB: \"/home/runner/board/orangepi-5-plus.dtb\"" \
             "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB9\"" \
             "      BOARD_COMM_UART_BAUD: \"1500000\"" \
-            "      BOARD_COMM_NET_IFACE: \"eno2np1\"" \
-            "      TFTP_DIR: \"orangepi\"" \
-            "      BIN_DIR: \"/home/runner/test/orangepi\"" \
+            # "      BOARD_COMM_NET_IFACE: \"eno2np1\"" \
+            # "      TFTP_DIR: \"orangepi\"" \
+            # "      BIN_DIR: \"/home/runner/test/orangepi\"" \
             "${extra_env_roc[@]}" \
             "    volumes:" \
             "      - ./runner-wrapper:/home/runner/runner-wrapper:ro" \
