@@ -148,7 +148,7 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "RUNNER_CUSTOM_IMAGE" "Image tag used for auto-build (can override)"
   printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_PHYTIUMPI" "Lock ID for phytiumpi board (default: board-phytiumpi); same ID = serial across runners"
   printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_ROC_RK3568_PC" "Lock ID for roc-rk3568-pc board (default: board-roc-rk3568-pc); same ID = serial"
-  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_ORANGEPI_5_PLUS" "Lock ID for roc-rk3568-pc board (default: board-orangepi-5-plus); same ID = serial"
+  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_ORANGEPI_5_PLUS" "Lock ID for orangepi-5-plus board (default: board-orangepi-5-plus); same ID = serial"
   printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_X86_64_PC" "Lock ID for x86_64-pc board (default: board-x86_64-pc); same ID = serial"
   printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_VISIONFIVE2" "Lock ID for visionfive2 board (default: board-visionfive2); same ID = serial"
   printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_DIR" "Lock dir in container (default /tmp/github-runner-locks)"
@@ -991,7 +991,7 @@ shell_generate_compose_file() {
     # 硬件板 roc - 总是启用文件锁
     local res_roc="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-board-roc-rk3568-pc}"
     # 硬件板 orangepi - 总是启用文件锁
-    local res_orangepi="${RUNNER_RESOURCE_ID_ORANGEPI:-board-orangepi}"
+    local res_orangepi="${RUNNER_RESOURCE_ID_ORANGEPI:-board-orangepi-5-plus}"
     # 硬件板 x86_64 - 总是启用文件锁
     local res_x86_64="${RUNNER_RESOURCE_ID_X86_64_PC:-board-x86_64-pc}"
     # 硬件板 visionfive2 - 总是启用文件锁
@@ -1215,7 +1215,7 @@ shell_generate_compose_file() {
             "      BOARD_DTB: \"/home/runner/board/roc-rk3568-pc.dtb\"" \
             "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB3\"" \
             "      BOARD_COMM_UART_BAUD: \"1500000\"" \
-            "${extra_env_roc[@]}" \
+            "${extra_env_orangepi[@]}" \
             "    volumes:" \
             "      - ./runner-wrapper:/home/runner/runner-wrapper:ro" \
             "$extra_vol_roc" \
@@ -1267,10 +1267,7 @@ shell_generate_compose_file() {
             "      BOARD_DTB: \"/home/runner/board/orangepi-5-plus.dtb\"" \
             "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB9\"" \
             "      BOARD_COMM_UART_BAUD: \"1500000\"" \
-            "      BOARD_COMM_NET_IFACE: \"eno2np1\"" \
-            "      TFTP_DIR: \"orangepi\"" \
-            "      BIN_DIR: \"/home/runner/test/orangepi\"" \
-            "${extra_env_roc[@]}" \
+            "${extra_env_roc[@]}" \ 
             "    volumes:" \
             "      - ./runner-wrapper:/home/runner/runner-wrapper:ro" \
             "$extra_vol_roc" \
