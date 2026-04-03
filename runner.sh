@@ -34,7 +34,14 @@ fi
 RUNNER_GROUP="${RUNNER_GROUP:-Default}"
 RUNNER_WORKDIR="${RUNNER_WORKDIR:-}"
 RUNNER_LABELS="${RUNNER_LABELS:-intel}"
-RUNNER_BOARD="2"
+RUNNER_BOARD_COUNT="${RUNNER_BOARD_COUNT:-${RUNNER_BOARD:-2}}"
+RUNNER_BOARD="${RUNNER_BOARD_COUNT}"
+BOARD_RUNNER_LABELS="${BOARD_RUNNER_LABELS:-board}"
+BOARD_RUNNER_DEVICES="${BOARD_RUNNER_DEVICES:-/dev/loop-control,/dev/loop0,/dev/loop1,/dev/loop2,/dev/loop3,/dev/kvm}"
+BOARD_RUNNER_GROUP_ADD="${BOARD_RUNNER_GROUP_ADD:-dialout}"
+BOARD_RUNNER_VOLUMES="${BOARD_RUNNER_VOLUMES:-}"
+BOARD_RUNNER_ENV="${BOARD_RUNNER_ENV:-}"
+BOARD_RUNNER_COMMAND="${BOARD_RUNNER_COMMAND:-/home/runner/run.sh}"
 DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
 COMPOSE_FILE="${COMPOSE_FILE:-}"
 DOCKERFILE_HASH_FILE="${DOCKERFILE_HASH_FILE:-}"
@@ -117,6 +124,13 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "RUNNER_NAME_PREFIX" "Runner name prefix"
   printf "  %-${KEYW}s %s\n" "RUNNER_IMAGE" "Image used for compose generation (default ghcr.io/actions/actions-runner:latest)"
   printf "  %-${KEYW}s %s\n" "RUNNER_CUSTOM_IMAGE" "Image tag used for auto-build (can override)"
+  printf "  %-${KEYW}s %s\n" "RUNNER_BOARD_COUNT" "Number of generic board runners to create"
+  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_LABELS" "Default labels for board runners"
+  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_DEVICES" "Comma-separated device list for board runners"
+  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_GROUP_ADD" "Comma-separated extra groups for board runners"
+  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_VOLUMES" "Semicolon-separated extra volume mounts for board runners"
+  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_ENV" "Semicolon-separated KEY=VALUE envs for board runners"
+  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_COMMAND" "Command executed by board runners"
   echo
   echo "Example workflow runs-on: runs-on: [self-hosted, linux, docker]"
 
@@ -141,6 +155,75 @@ shell_detect_device_gid() {
     local device_path="${1:-}"
     [[ -n "$device_path" && -e "$device_path" ]] || return 1
     stat -c '%g' "$device_path" 2>/dev/null
+}
+
+shell_trim() {
+    local value="${1:-}"
+    value="$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    printf '%s' "$value"
+}
+
+shell_get_indexed_env() {
+    local key="$1" index="$2" default_value="${3:-}"
+    local indexed_key="${key}_${index}"
+    if [[ -n "${!indexed_key-}" ]]; then
+        printf '%s' "${!indexed_key}"
+    else
+        printf '%s' "$default_value"
+    fi
+}
+
+shell_append_csv_yaml_list() {
+    local file="$1" indent="$2" csv="$3"
+    local item trimmed
+    IFS=',' read -r -a _items <<< "$csv"
+    for item in "${_items[@]}"; do
+        trimmed="$(shell_trim "$item")"
+        [[ -n "$trimmed" ]] || continue
+        printf '%s- %s\n' "$indent" "$trimmed" >> "$file"
+    done
+}
+
+shell_append_device_yaml_list() {
+    local file="$1" indent="$2" csv="$3"
+    local item trimmed mapping
+    IFS=',' read -r -a _items <<< "$csv"
+    for item in "${_items[@]}"; do
+        trimmed="$(shell_trim "$item")"
+        [[ -n "$trimmed" ]] || continue
+        if [[ "$trimmed" == *:* ]]; then
+            mapping="$trimmed"
+        else
+            mapping="${trimmed}:${trimmed}"
+        fi
+        printf '%s- %s\n' "$indent" "$mapping" >> "$file"
+    done
+}
+
+shell_append_semicolon_yaml_list() {
+    local file="$1" indent="$2" values="$3"
+    local item trimmed
+    IFS=';' read -r -a _items <<< "$values"
+    for item in "${_items[@]}"; do
+        trimmed="$(shell_trim "$item")"
+        [[ -n "$trimmed" ]] || continue
+        printf '%s- %s\n' "$indent" "$trimmed" >> "$file"
+    done
+}
+
+shell_append_semicolon_env_map() {
+    local file="$1" indent="$2" values="$3"
+    local item trimmed key value
+    IFS=';' read -r -a _items <<< "$values"
+    for item in "${_items[@]}"; do
+        trimmed="$(shell_trim "$item")"
+        [[ -n "$trimmed" ]] || continue
+        [[ "$trimmed" == *"="* ]] || continue
+        key="$(shell_trim "${trimmed%%=*}")"
+        value="$(shell_trim "${trimmed#*=}")"
+        [[ -n "$key" ]] || continue
+        printf '%s%s: "%s"\n' "$indent" "$key" "$value" >> "$file"
+    done
 }
 
 shell_get_org_and_pat() {
@@ -490,6 +573,7 @@ shell_get_compose_file() {
 
 shell_generate_compose_file() {
     local general_count=$1
+    local board_count="${RUNNER_BOARD_COUNT:-0}"
     local extra_proxy_env=()
     local kvm_gid="${RUNNER_KVM_GID:-}"
 
@@ -504,13 +588,16 @@ shell_generate_compose_file() {
         kvm_gid="993"
         shell_warn "/dev/kvm gid not detected; falling back to legacy gid ${kvm_gid}. Set RUNNER_KVM_GID to override."
     fi
+    [[ -n "${HTTP_PROXY:-}" ]] && extra_proxy_env+=("    HTTP_PROXY: \"${HTTP_PROXY}\"")
+    [[ -n "${HTTPS_PROXY:-}" ]] && extra_proxy_env+=("    HTTPS_PROXY: \"${HTTPS_PROXY}\"")
+    [[ -n "${NO_PROXY:-}" ]] && extra_proxy_env+=("    NO_PROXY: \"${NO_PROXY}\"")
 
     # 使用 printf 输出文件头
     printf '%s\n' \
         "# 自动生成的 Docker Compose 配置" \
         "# 机器名: $(hostname)" \
         "# 普通 runner 数量: $general_count" \
-        "# 板子 runner 数量: ${RUNNER_BOARD}" \
+        "# 板子 runner 数量: ${board_count}" \
         "" \
         "# 基础配置" \
         "x-${RUNNER_NAME_PREFIX}runner-base: &runner_base" \
@@ -523,9 +610,7 @@ shell_generate_compose_file() {
         "    RUNNER_REMOVE_ON_STOP: \"false\"" \
         "    DISABLE_AUTO_UPDATE: \"${DISABLE_AUTO_UPDATE}\"" \
         "    RUNNER_WORKDIR: \"${RUNNER_WORKDIR}\"" \
-        "    HTTP_PROXY: \"http://127.0.0.1:7890\"" \
-        "    HTTPS_PROXY: \"http://127.0.0.1:7890\"" \
-        "    NO_PROXY: localhost,127.0.0.1,.internal" \
+        "${extra_proxy_env[@]}" \
         "  network_mode: host" \
         "  privileged: true" \
         "" \
@@ -558,112 +643,47 @@ shell_generate_compose_file() {
             "" >> "${COMPOSE_FILE}"
     done
 
-    # 只有当 RUNNER_BOARD 大于 0 时才生成板子 runners
-    if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
-        # 生成板子 runners
+    # 只有当 RUNNER_BOARD_COUNT 大于 0 时才生成板子 runners
+    if [[ "${board_count}" -gt 0 ]]; then
         echo "  # 板子专用 runners" >> "${COMPOSE_FILE}"
-        
-        # phytiumpi 板子配置
-        printf '%s\n' \
-            "  ${RUNNER_NAME_PREFIX}runner-phytiumpi:" \
-            "    <<: *runner_base" \
-            "    container_name: \"${RUNNER_NAME_PREFIX}runner-phytiumpi\"" \
-            "    command:" \
-            "      - /bin/bash" \
-            "      - -c" \
-            "      - |" \
-            "        set -e" \
-            "        mkdir -p /home/runner/board" \
-            "        cd /home/runner/board" \
-            "        # 尝试下载文件，如果失败则跳过" \
-            "        echo \"Attempting to download phytiumpi files...\"" \
-            "        if curl -fsSL --connect-timeout 30 --max-time 300 https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.18/phytiumpi_linux.tar.gz -o phytiumpi_linux.tar.gz; then" \
-            "            echo \"Download successful, extracting...\"" \
-            "            tar -xzf phytiumpi_linux.tar.gz" \
-            "            echo \"Extraction completed\"" \
-            "        else" \
-            "            echo \"Download failed, continuing with existing files if any...\"" \
-            "        fi" \
-            "        exec /home/runner/run.sh" \
-            "    devices:" \
-            "      - /dev/loop-control:/dev/loop-control" \
-            "      - /dev/loop0:/dev/loop0" \
-            "      - /dev/loop1:/dev/loop1" \
-            "      - /dev/loop2:/dev/loop2" \
-            "      - /dev/loop3:/dev/loop3" \
-            "      - /dev/kvm:/dev/kvm" \
-            "      - /dev/ttyUSB0:/dev/ttyUSB0" \
-            "      - /dev/ttyUSB1:/dev/ttyUSB1" \
-            "    group_add:" \
-            "      - ${kvm_gid}" \
-            "      - dialout" \
-            "    environment:" \
-            "      <<: *runner_env" \
-            "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-phytiumpi\"" \
-            "      RUNNER_LABELS: \"phytiumpi\"" \
-            "      BOARD_POWER_ON: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB1 1\"" \
-            "      BOARD_POWER_OFF: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB1 0\"" \
-            "      BOARD_POWER_RESET: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB1 0 && sleep 2 && mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB1 1\"" \
-            "      BOARD_DTB: \"/home/runner/board/phytiumpi.dtb\"" \
-            "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB0\"" \
-            "      BOARD_COMM_UART_BAUD: \"115200\"" \
-            "      BOARD_COMM_NET_IFACE: \"eno2np1\"" \
-            "      TFTP_DIR: \"phytiumpi\"" \
-            "      BIN_DIR: \"/home/runner/test/phytiumpi\"" \
-            "    volumes:" \
-            "      - /home/$(whoami)/test/phytiumpi:/home/runner/tftp" \
-            "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-data:/home/runner" \
-            "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules:/etc/udev/rules.d" \
-            "" >> "${COMPOSE_FILE}"
-        
-        # roc-rk3568-pc 板子配置
-        printf '%s\n' \
-            "  ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc:" \
-            "    <<: *runner_base" \
-            "    container_name: \"${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc\"" \
-            "    command:" \
-            "      - /bin/bash" \
-            "      - -c" \
-            "      - |" \
-            "        set -e" \
-            "        mkdir -p /home/runner/board" \
-            "        cd /home/runner/board" \
-            "        # 尝试下载文件，如果失败则跳过" \
-            "        echo \"Attempting to download roc-rk3568-pc files...\"" \
-            "        if curl -fsSL --connect-timeout 30 --max-time 300 https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.18/roc-rk3568-pc_linux.tar.gz -o roc-rk3568-pc_linux.tar.gz; then" \
-            "            echo \"Download successful, extracting...\"" \
-            "            tar -xzf roc-rk3568-pc_linux.tar.gz" \
-            "            echo \"Extraction completed\"" \
-            "        else" \
-            "            echo \"Download failed, continuing with existing files if any...\"" \
-            "        fi" \
-            "        exec /home/runner/run.sh" \
-            "    devices:" \
-            "      - /dev/loop-control:/dev/loop-control" \
-            "      - /dev/loop0:/dev/loop0" \
-            "      - /dev/loop1:/dev/loop1" \
-            "      - /dev/loop2:/dev/loop2" \
-            "      - /dev/loop3:/dev/loop3" \
-            "      - /dev/kvm:/dev/kvm" \
-            "      - /dev/ttyUSB2:/dev/ttyUSB2" \
-            "      - /dev/ttyUSB3:/dev/ttyUSB3" \
-            "    group_add:" \
-            "      - ${kvm_gid}" \
-            "      - dialout" \
-            "    environment:" \
-            "      <<: *runner_env" \
-            "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc\"" \
-            "      RUNNER_LABELS: \"roc-rk3568-pc\"" \
-            "      BOARD_POWER_ON: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB2 1\"" \
-            "      BOARD_POWER_OFF: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB2 0\"" \
-            "      BOARD_POWER_RESET: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB2 0 && sleep 2 && mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB2 1\"" \
-            "      BOARD_DTB: \"/home/runner/board/roc-rk3568-pc.dtb\"" \
-            "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB3\"" \
-            "      BOARD_COMM_UART_BAUD: \"1500000\"" \
-            "    volumes:" \
-            "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data:/home/runner" \
-            "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:/etc/udev/rules.d" \
-            "" >> "${COMPOSE_FILE}"
+        local i board_labels board_devices board_groups board_env board_volumes board_command
+        for i in $(seq 1 "$board_count"); do
+            board_labels="$(shell_get_indexed_env "BOARD_RUNNER_LABELS" "$i" "${BOARD_RUNNER_LABELS}")"
+            board_devices="$(shell_get_indexed_env "BOARD_RUNNER_DEVICES" "$i" "${BOARD_RUNNER_DEVICES}")"
+            board_groups="$(shell_get_indexed_env "BOARD_RUNNER_GROUP_ADD" "$i" "${BOARD_RUNNER_GROUP_ADD}")"
+            board_env="$(shell_get_indexed_env "BOARD_RUNNER_ENV" "$i" "${BOARD_RUNNER_ENV}")"
+            board_volumes="$(shell_get_indexed_env "BOARD_RUNNER_VOLUMES" "$i" "${BOARD_RUNNER_VOLUMES}")"
+            board_command="$(shell_get_indexed_env "BOARD_RUNNER_COMMAND" "$i" "${BOARD_RUNNER_COMMAND}")"
+
+            printf '%s\n' \
+                "  ${RUNNER_NAME_PREFIX}runner-board-${i}:" \
+                "    <<: *runner_base" \
+                "    container_name: \"${RUNNER_NAME_PREFIX}runner-board-${i}\"" \
+                "    command:" \
+                "      - /bin/bash" \
+                "      - -lc" \
+                "      - |" \
+                "        exec ${board_command}" \
+                "    devices:" >> "${COMPOSE_FILE}"
+            shell_append_device_yaml_list "${COMPOSE_FILE}" "      " "${board_devices}"
+            printf '%s\n' \
+                "    group_add:" \
+                "      - ${kvm_gid}" >> "${COMPOSE_FILE}"
+            shell_append_csv_yaml_list "${COMPOSE_FILE}" "      " "${board_groups}"
+            printf '%s\n' \
+                "    environment:" \
+                "      <<: *runner_env" \
+                "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-board-${i}\"" \
+                "      RUNNER_LABELS: \"${board_labels}\"" \
+                "      RUNNER_BOARD_INDEX: \"${i}\"" >> "${COMPOSE_FILE}"
+            shell_append_semicolon_env_map "${COMPOSE_FILE}" "      " "${board_env}"
+            printf '%s\n' \
+                "    volumes:" \
+                "      - ${RUNNER_NAME_PREFIX}runner-board-${i}-data:/home/runner" \
+                "      - ${RUNNER_NAME_PREFIX}runner-board-${i}-udev-rules:/etc/udev/rules.d" >> "${COMPOSE_FILE}"
+            shell_append_semicolon_yaml_list "${COMPOSE_FILE}" "      " "${board_volumes}"
+            printf '\n' >> "${COMPOSE_FILE}"
+        done
     fi
 
     # 生成 volumes
@@ -677,21 +697,16 @@ shell_generate_compose_file() {
             "    name: ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules" >> "${COMPOSE_FILE}"
     done
     
-    # 只有当 RUNNER_BOARD 大于 0 时才生成板子相关的 volumes
-    if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
-        # 为 phytiumpi 板子生成 volumes
-        printf '%s\n' \
-            "  ${RUNNER_NAME_PREFIX}runner-phytiumpi-data:" \
-            "    name: ${RUNNER_NAME_PREFIX}runner-phytiumpi-data" \
-            "  ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules:" \
-            "    name: ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules" >> "${COMPOSE_FILE}"
-        
-        # 为 roc-rk3568-pc 板子生成 volumes
-        printf '%s\n' \
-            "  ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data:" \
-            "    name: ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data" \
-            "  ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:" \
-            "    name: ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules" >> "${COMPOSE_FILE}"
+    # 只有当 RUNNER_BOARD_COUNT 大于 0 时才生成板子相关的 volumes
+    if [[ "${board_count}" -gt 0 ]]; then
+        local i
+        for i in $(seq 1 "$board_count"); do
+            printf '%s\n' \
+                "  ${RUNNER_NAME_PREFIX}runner-board-${i}-data:" \
+                "    name: ${RUNNER_NAME_PREFIX}runner-board-${i}-data" \
+                "  ${RUNNER_NAME_PREFIX}runner-board-${i}-udev-rules:" \
+                "    name: ${RUNNER_NAME_PREFIX}runner-board-${i}-udev-rules" >> "${COMPOSE_FILE}"
+        done
     fi
 }
 
@@ -941,8 +956,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
             RUNNER_IMAGE="$(shell_prepare_runner_image)";
 
-            if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
-                shell_info "Generating $COMPOSE_FILE with $count generic runners and ${RUNNER_BOARD} board-specific runners."
+            if [[ "${RUNNER_BOARD_COUNT}" -gt 0 ]]; then
+                shell_info "Generating $COMPOSE_FILE with $count generic runners and ${RUNNER_BOARD_COUNT} board runners."
             else
                 shell_info "Generating $COMPOSE_FILE with $count generic runners."
             fi
@@ -961,15 +976,16 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             if [[ -n "$cont_list" ]]; then cont_count=$(echo "$cont_list" | wc -l | tr -d ' '); fi
             
             # 计算通用 runner 的数量
-            if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
-                # 如果启用了板子 runner，则减去 RUNNER_BOARD 个板子 runner
-                generic_count=$(( cont_count - RUNNER_BOARD ))
+            if [[ "${RUNNER_BOARD_COUNT}" -gt 0 ]]; then
+                # 如果启用了板子 runner，则减去 RUNNER_BOARD_COUNT 个板子 runner
+                generic_count=$(( cont_count - RUNNER_BOARD_COUNT ))
+                [[ "$generic_count" -ge 0 ]] || generic_count=0
             else
                 # 如果没有启用板子 runner，则所有容器都是通用 runner
                 generic_count=$cont_count
             fi
-            if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
-                shell_info "Regenerating $COMPOSE_FILE with ${generic_count} existing runners and ${RUNNER_BOARD} board-specific runners."
+            if [[ "${RUNNER_BOARD_COUNT}" -gt 0 ]]; then
+                shell_info "Regenerating $COMPOSE_FILE with ${generic_count} existing runners and ${RUNNER_BOARD_COUNT} board runners."
             else
                 shell_info "Regenerating $COMPOSE_FILE with ${generic_count} existing runners."
             fi
