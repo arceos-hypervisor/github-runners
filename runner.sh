@@ -26,16 +26,6 @@ RUNNER_WORKDIR="${RUNNER_WORKDIR:-}"
 RUNNER_LABELS="${RUNNER_LABELS:-intel}"
 RUNNER_BOARD="2"
 DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
-# 板子级：未设置时用本板默认值（同类型板串行、不同类型板并行）；多组织共享同一块板时显式设为相同 ID 即可
-RUNNER_RESOURCE_ID_PHYTIUMPI="${RUNNER_RESOURCE_ID_PHYTIUMPI:-}"
-RUNNER_RESOURCE_ID_ROC_RK3568_PC="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}"
-# 多组织共享硬件锁：设置后板子 runner 将使用 runner-wrapper，并挂载锁目录
-# 可为每块板子设不同 ID（如 RUNNER_RESOURCE_ID_PHYTIUMPI、RUNNER_RESOURCE_ID_ROC_RK3568_PC），不同板子 job 并行
-RUNNER_RESOURCE_ID="${RUNNER_RESOURCE_ID:-}"
-RUNNER_RESOURCE_ID_PHYTIUMPI="${RUNNER_RESOURCE_ID_PHYTIUMPI:-${RUNNER_RESOURCE_ID}}"
-RUNNER_RESOURCE_ID_ROC_RK3568_PC="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-${RUNNER_RESOURCE_ID}}"
-RUNNER_LOCK_DIR="${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
-RUNNER_LOCK_HOST_PATH="${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}"
 # Compose 文件名：未显式设置时自动拼入 ORG/REPO，避免同一主机多组织时文件冲突
 # 组织级默认：docker-compose.<org>.yml  仓库级默认：docker-compose.<org>.<repo>.yml
 if [[ -z "${COMPOSE_FILE:-}" ]]; then
@@ -114,13 +104,6 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "RUNNER_NAME_PREFIX" "Runner name prefix"
   printf "  %-${KEYW}s %s\n" "RUNNER_IMAGE" "Image used for compose generation (default ghcr.io/actions/actions-runner:latest)"
   printf "  %-${KEYW}s %s\n" "RUNNER_CUSTOM_IMAGE" "Image tag used for auto-build (can override)"
-  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_PHYTIUMPI" "Lock ID for phytiumpi board (default: board-phytiumpi); same ID = serial across runners"
-  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_ROC_RK3568_PC" "Lock ID for roc-rk3568-pc board (default: board-roc-rk3568-pc); same ID = serial"
-  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID" "Default lock resource ID for all board runners; same ID = serial, different = parallel"
-  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_PHYTIUMPI" "Override for phytiumpi board (default: RUNNER_RESOURCE_ID)"
-  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_ROC_RK3568_PC" "Override for roc-rk3568-pc board (default: RUNNER_RESOURCE_ID)"
-  printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_DIR" "Lock dir in container (default /tmp/github-runner-locks)"
-  printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_HOST_PATH" "Lock dir on host for bind mount (default /tmp/github-runner-locks)"
   echo
   echo "Example workflow runs-on: runs-on: [self-hosted, linux, docker]"
 
@@ -489,43 +472,8 @@ shell_get_compose_file() {
 
 shell_generate_compose_file() {
     local general_count=$1
-    # ════════════════════════════════════════════════════════════════
-    # 第一步：为两种板子 runner 类型定义资源 ID
-    # ════════════════════════════════════════════════════════════════
-    # 硬件板 phytiumpi - 总是启用文件锁
-    local res_phytiumpi="${RUNNER_RESOURCE_ID_PHYTIUMPI:-}"
-    # 硬件板 roc - 总是启用文件锁
-    local res_roc="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}"
-
-    # ════════════════════════════════════════════════════════════════
-    # 第二步：两种板子 runner 类型的 entrypoint 配置
-    # ════════════════════════════════════════════════════════════════
-    # 设计说明：若设置了资源 ID（RUNNER_RESOURCE_ID_*），板子 runner 使用
-    #   runner-wrapper.sh 来管理文件锁
-    # 普通 runner 始终使用 /home/runner/run.sh（不经过 runner-wrapper）
-    local runner_entrypoint_phytiumpi="/home/runner/run.sh"
-    local runner_entrypoint_roc="/home/runner/run.sh"
-    # 若设置了资源 ID，则改用 runner-wrapper 来处理文件锁
-    [[ -n "$res_phytiumpi" ]] && runner_entrypoint_phytiumpi="/home/runner/runner-wrapper/runner-wrapper.sh"
-    [[ -n "$res_roc" ]] && runner_entrypoint_roc="/home/runner/runner-wrapper/runner-wrapper.sh"
-
-    # ════════════════════════════════════════════════════════════════
-    # 第三步：为两种板子 runner 类型准备额外的环境变量数组
-    # ════════════════════════════════════════════════════════════════
-    # 重复模式说明：以下两部分几乎完全相同，都是：
-    #   1. 定义空数组：extra_env_X=()
-    #   2. 如果有资源 ID，则添加三个环境变量：
-    #      - RUNNER_RESOURCE_ID: 用于锁机制
-    #      - RUNNER_SCRIPT: 给 runner-wrapper 使用的脚本路径
-    #      - RUNNER_LOCK_DIR: 容器内锁文件目录
-    # 原因：两种板子 runner 都可能需要文件锁机制
-    local extra_env_phytiumpi=()
-    local extra_env_roc=()
     local extra_proxy_env=()
     local kvm_gid="${RUNNER_KVM_GID:-}"
-    # 只有设置了相应的资源 ID，才为该类型 runner 添加锁相关环境变量
-    [[ -n "$res_phytiumpi" ]] && extra_env_phytiumpi=("      RUNNER_RESOURCE_ID: \"$res_phytiumpi\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
-    [[ -n "$res_roc" ]] && extra_env_roc=("      RUNNER_RESOURCE_ID: \"$res_roc\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
 
     # /dev/kvm 的权限检查是按数字 GID 生效
     # 优先使用宿主机当前 /dev/kvm 的实际 GID，必要时允许通过 RUNNER_KVM_GID 覆盖
@@ -538,18 +486,6 @@ shell_generate_compose_file() {
         kvm_gid="993"
         shell_warn "/dev/kvm gid not detected; falling back to legacy gid ${kvm_gid}. Set RUNNER_KVM_GID to override."
     fi
-
-    # ════════════════════════════════════════════════════════════════
-    # 第四步：为两种板子 runner 类型准备卷挂载配置
-    # ════════════════════════════════════════════════════════════════
-    # 重复模式说明：以下两部分完全相同（除变量名），都实现：
-    #   如果设置了资源 ID，则挂载主机的锁文件目录到容器内
-    # 原因：文件锁机制需要在主机和容器间共享锁文件
-    local extra_vol_phytiumpi=""
-    local extra_vol_roc=""
-    # 只有设置了相应的资源 ID，才为该类型 runner 挂载锁文件目录
-    [[ -n "$res_phytiumpi" ]] && extra_vol_phytiumpi="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
-    [[ -n "$res_roc" ]] && extra_vol_roc="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
 
     # 使用 printf 输出文件头
     printf '%s\n' \
@@ -630,7 +566,7 @@ shell_generate_compose_file() {
             "        else" \
             "            echo \"Download failed, continuing with existing files if any...\"" \
             "        fi" \
-            "        ${runner_entrypoint_phytiumpi}" \
+            "        exec /home/runner/run.sh" \
             "    devices:" \
             "      - /dev/loop-control:/dev/loop-control" \
             "      - /dev/loop0:/dev/loop0" \
@@ -656,10 +592,8 @@ shell_generate_compose_file() {
             "      BOARD_COMM_NET_IFACE: \"eno2np1\"" \
             "      TFTP_DIR: \"phytiumpi\"" \
             "      BIN_DIR: \"/home/runner/test/phytiumpi\"" \
-            "${extra_env_phytiumpi[@]}" \
             "    volumes:" \
             "      - /home/$(whoami)/test/phytiumpi:/home/runner/tftp" \
-            "$extra_vol_phytiumpi" \
             "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-data:/home/runner" \
             "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules:/etc/udev/rules.d" \
             "" >> "${COMPOSE_FILE}"
@@ -685,7 +619,7 @@ shell_generate_compose_file() {
             "        else" \
             "            echo \"Download failed, continuing with existing files if any...\"" \
             "        fi" \
-            "        ${runner_entrypoint_roc}" \
+            "        exec /home/runner/run.sh" \
             "    devices:" \
             "      - /dev/loop-control:/dev/loop-control" \
             "      - /dev/loop0:/dev/loop0" \
@@ -708,9 +642,7 @@ shell_generate_compose_file() {
             "      BOARD_DTB: \"/home/runner/board/roc-rk3568-pc.dtb\"" \
             "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB3\"" \
             "      BOARD_COMM_UART_BAUD: \"1500000\"" \
-            "${extra_env_roc[@]}" \
             "    volumes:" \
-            "$extra_vol_roc" \
             "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data:/home/runner" \
             "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:/etc/udev/rules.d" \
             "" >> "${COMPOSE_FILE}"

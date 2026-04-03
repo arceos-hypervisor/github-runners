@@ -33,11 +33,7 @@
 # 1. 赋予执行权限
 chmod +x runner.sh
 
-# 2. （可选）配置环境变量
-cp .env.example .env
-# 编辑 .env，至少填写 ORG 与 GH_PAT
-
-# 3. 生成并启动 Runner
+# 2. 生成并启动 Runner
 ./runner.sh init [-n N]
 ```
 
@@ -76,41 +72,6 @@ name:label1[,label2];name2:label1
 
 - **自定义镜像**：若存在 `Dockerfile`，脚本会根据哈希决定是否重建 `RUNNER_CUSTOM_IMAGE`
 - **令牌缓存**：注册令牌缓存到 `.reg_token.cache`，通过 `REG_TOKEN_CACHE_TTL` 配置过期时间（秒）
-
-## 多组织共享
-
-当前脚本实现了在同一台主机上运行多个 Docker 容器，分别注册到不同的 GitHub 组织，即使这些容器需要访问同一物理硬件（如开发板、串口、电源控制等），也不会导致 CI 会导致资源冲突。
-
-### 场景说明
-
-本方案基于 Docker 部署，每个容器运行一个独立的 runner 实例：
-
-```
-主机 A
-├── 容器 1 (runner) → 注册到组织 A
-├── 容器 2 (runner) → 注册到组织 B
-└── 物理硬件（如 phytiumpi 开发板）← 两个容器都可能访问
-```
-
-根据 [GitHub 官方设计](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners)，一个 runner 进程只能注册到一个目标（repo/org/enterprise）。但通过 Docker，我们可以在同一主机上运行多个容器实例，每个注册到不同组织。
-
-当多个容器需要访问同一物理硬件时，若无协调机制，并发 job 会导致硬件冲突（如串口抢占、电源状态混乱）。当前，我们通过 `runner-wrapper` 的文件锁机制，确保同一硬件同一时间只执行一个 job。
-
-### 配置方法
-
-使用 **runner.sh** 生成的环境，板子 runner 默认启用 wrapper 并挂载共享锁目录 `/tmp/github-runner-locks`。优先使用板子级环境变量（如 `RUNNER_RESOURCE_ID_PHYTIUMPI`），否则使用默认值（phytiumpi: `board-phytiumpi`，roc-rk3568-pc: `board-roc-rk3568-pc`）。
-
-如果要在**多组织中共享同一块板时**，则只需要在各自的 `.env` 中为该板设置相同的锁 ID。这样，即使两个组织的 runner 容器同时收到 job，也会通过文件锁排队执行，避免硬件冲突。
-
-```bash
-# 组织 A 的 .env
-RUNNER_RESOURCE_ID_PHYTIUMPI=board-phytiumpi
-
-# 组织 B 的 .env（同一主机，不同目录）
-RUNNER_RESOURCE_ID_PHYTIUMPI=board-phytiumpi
-```
-
-**注意**：串行是硬件本身的限制，本方案把「无秩序抢占」变为「有序排队」，不额外降低吞吐。不同板子使用各自锁 ID 可并行执行。详见 [runner-wrapper/README.md](runner-wrapper/README.md)，参考 [Discussion #341](https://github.com/orgs/arceos-hypervisor/discussions/341)。
 
 ## 贡献
 
