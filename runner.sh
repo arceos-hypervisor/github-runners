@@ -20,15 +20,29 @@ REPO="${REPO:-}"
 # Runner container related parameters
 RUNNER_IMAGE="${RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}"
 RUNNER_CUSTOM_IMAGE="${RUNNER_CUSTOM_IMAGE:-qc-actions-runner:v0.0.1}"
-RUNNER_NAME_PREFIX="${RUNNER_NAME_PREFIX:-$(hostname)}-"
+if [[ -z "${RUNNER_NAME_PREFIX:-}" ]]; then
+  if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
+    RUNNER_NAME_PREFIX="$(hostname)-${ORG}-${REPO}-"
+  elif [[ -n "${ORG:-}" ]]; then
+    RUNNER_NAME_PREFIX="$(hostname)-${ORG}-"
+  else
+    RUNNER_NAME_PREFIX="$(hostname)-"
+  fi
+else
+  [[ "$RUNNER_NAME_PREFIX" == *- ]] || RUNNER_NAME_PREFIX="${RUNNER_NAME_PREFIX}-"
+fi
 RUNNER_GROUP="${RUNNER_GROUP:-Default}"
 RUNNER_WORKDIR="${RUNNER_WORKDIR:-}"
 RUNNER_LABELS="${RUNNER_LABELS:-intel}"
 RUNNER_BOARD="2"
 DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
+COMPOSE_FILE="${COMPOSE_FILE:-}"
+DOCKERFILE_HASH_FILE="${DOCKERFILE_HASH_FILE:-}"
+REG_TOKEN_CACHE_FILE="${REG_TOKEN_CACHE_FILE:-}"
+REG_TOKEN_CACHE_TTL="${REG_TOKEN_CACHE_TTL:-300}" # seconds, default 5 minutes
 # Compose 文件名：未显式设置时自动拼入 ORG/REPO，避免同一主机多组织时文件冲突
 # 组织级默认：docker-compose.<org>.yml  仓库级默认：docker-compose.<org>.<repo>.yml
-if [[ -z "${COMPOSE_FILE:-}" ]]; then
+if [[ -z "$COMPOSE_FILE" ]]; then
   if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
     COMPOSE_FILE="docker-compose.${ORG}.${REPO}.yml"
   elif [[ -n "${ORG:-}" ]]; then
@@ -38,7 +52,7 @@ if [[ -z "${COMPOSE_FILE:-}" ]]; then
   fi
 fi
 # Dockerfile hash 文件名：同样根据 ORG/REPO 区分，避免多组织时 hash 冲突
-if [[ -z "${DOCKERFILE_HASH_FILE:-}" ]]; then
+if [[ -z "$DOCKERFILE_HASH_FILE" ]]; then
   if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
     DOCKERFILE_HASH_FILE=".dockerfile.${ORG}.${REPO}.sha256"
   elif [[ -n "${ORG:-}" ]]; then
@@ -49,7 +63,7 @@ if [[ -z "${DOCKERFILE_HASH_FILE:-}" ]]; then
 fi
 # REG_TOKEN_CACHE_FILE 文件名：未显式设置时自动拼入 ORG/REPO，避免同一主机多组织时文件冲突
 # 组织级默认：.reg_token.cache.<org>  仓库级默认：.reg_token.cache.<org>.<repo>
-if [[ -z "${REG_TOKEN_CACHE_FILE:-}" ]]; then
+if [[ -z "$REG_TOKEN_CACHE_FILE" ]]; then
   if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
     REG_TOKEN_CACHE_FILE=".reg_token.cache.${ORG}.${REPO}"
   elif [[ -n "${ORG:-}" ]]; then
@@ -58,7 +72,6 @@ if [[ -z "${REG_TOKEN_CACHE_FILE:-}" ]]; then
     REG_TOKEN_CACHE_FILE=".reg_token.cache"
   fi
 fi
-REG_TOKEN_CACHE_TTL="${REG_TOKEN_CACHE_TTL:-300}" # seconds, default 5 minutes
 
 # ------------------------------- Helpers -------------------------------
 shell_usage() {
@@ -197,9 +210,14 @@ shell_get_org_and_pat() {
 
     # Recalculate RUNNER_NAME_PREFIX if it was auto-generated (not explicitly set by user)
     # Same logic as COMPOSE_FILE etc.: check if empty or equals default value (hostname only)
-    local default_prefix
+    local default_prefix default_org_prefix default_repo_prefix
     default_prefix="$(hostname)-"
-    if [[ -z "${RUNNER_NAME_PREFIX:-}" ]] || [[ "$RUNNER_NAME_PREFIX" == "$default_prefix" ]]; then
+    default_org_prefix="$(hostname)-${ORG}-"
+    default_repo_prefix="$(hostname)-${ORG}-${REPO}-"
+    if [[ -z "${RUNNER_NAME_PREFIX:-}" ]] || \
+       [[ "$RUNNER_NAME_PREFIX" == "$default_prefix" ]] || \
+       [[ -n "${ORG:-}" && "$RUNNER_NAME_PREFIX" == "$default_org_prefix" ]] || \
+       [[ -n "${ORG:-}" && -n "${REPO:-}" && "$RUNNER_NAME_PREFIX" == "$default_repo_prefix" ]]; then
         if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
             RUNNER_NAME_PREFIX="$(hostname)-${ORG}-${REPO}-"
         elif [[ -n "${ORG:-}" ]]; then
