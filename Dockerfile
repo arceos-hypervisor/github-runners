@@ -55,19 +55,9 @@ RUN apt-get update \
        python3-pip \
        python3-tomli \
        python3-sphinx \
-       cmake \
-       clang \
-       libclang-dev \
        ninja-build \
        libslirp0 \
     && rm -rf /var/lib/apt/lists/*
-
-# Ensure bindgen can find libclang.so in a stable location.
-RUN set -eux; \
-    libclang_path="$(ls -1 /usr/lib/llvm-*/lib/libclang.so 2>/dev/null | head -n1)"; \
-    if [ -n "${libclang_path}" ]; then \
-      ln -sf "${libclang_path}" /usr/lib/libclang.so; \
-    fi
 
 # Build and install QEMU 10.1.2 from source 
 RUN mkdir -p /tmp/qemu-build \
