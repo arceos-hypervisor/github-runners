@@ -72,7 +72,6 @@ name:label1[,label2];name2:label1
 
 - **自定义镜像**：若存在 `Dockerfile`，脚本会根据哈希决定是否重建 `RUNNER_CUSTOM_IMAGE`
 - **令牌缓存**：注册令牌缓存到 `.reg_token.cache`，通过 `REG_TOKEN_CACHE_TTL` 配置过期时间（秒）
-
 ## 贡献
 
 ```bash
