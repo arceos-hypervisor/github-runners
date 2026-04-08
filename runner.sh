@@ -20,8 +20,6 @@ REPO="${REPO:-}"
 # Runner container related parameters
 RUNNER_IMAGE="${RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}"
 RUNNER_CUSTOM_IMAGE="${RUNNER_CUSTOM_IMAGE:-qc-actions-runner:v0.0.1}"
-# 容器名前缀：未显式设置时自动拼入 ORG/REPO，避免同一主机多副本时容器重名
-# 组织级默认：<hostname>-<org>-  仓库级默认：<hostname>-<org>-<repo>-
 if [[ -z "${RUNNER_NAME_PREFIX:-}" ]]; then
   if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
     RUNNER_NAME_PREFIX="$(hostname)-${ORG}-${REPO}-"
@@ -31,22 +29,27 @@ if [[ -z "${RUNNER_NAME_PREFIX:-}" ]]; then
     RUNNER_NAME_PREFIX="$(hostname)-"
   fi
 else
-  # 用户显式设置了 RUNNER_NAME_PREFIX；确保以 - 结尾
   [[ "$RUNNER_NAME_PREFIX" == *- ]] || RUNNER_NAME_PREFIX="${RUNNER_NAME_PREFIX}-"
 fi
 RUNNER_GROUP="${RUNNER_GROUP:-Default}"
 RUNNER_WORKDIR="${RUNNER_WORKDIR:-}"
 RUNNER_LABELS="${RUNNER_LABELS:-intel}"
-RUNNER_BOARD="2"
+RUNNER_BOARD_COUNT="${RUNNER_BOARD_COUNT:-${RUNNER_BOARD:-2}}"
+RUNNER_BOARD="${RUNNER_BOARD_COUNT}"
+BOARD_RUNNER_LABELS="${BOARD_RUNNER_LABELS:-board}"
+BOARD_RUNNER_DEVICES="${BOARD_RUNNER_DEVICES:-/dev/loop-control,/dev/loop0,/dev/loop1,/dev/loop2,/dev/loop3,/dev/kvm}"
+BOARD_RUNNER_GROUP_ADD="${BOARD_RUNNER_GROUP_ADD:-dialout}"
+BOARD_RUNNER_VOLUMES="${BOARD_RUNNER_VOLUMES:-}"
+BOARD_RUNNER_ENV="${BOARD_RUNNER_ENV:-}"
+BOARD_RUNNER_COMMAND="${BOARD_RUNNER_COMMAND:-/home/runner/run.sh}"
 DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
-# 板子级：未设置时用本板默认值（同类型板串行、不同类型板并行）；多组织共享同一块板时显式设为相同 ID 即可
-RUNNER_RESOURCE_ID_PHYTIUMPI="${RUNNER_RESOURCE_ID_PHYTIUMPI:-}"
-RUNNER_RESOURCE_ID_ROC_RK3568_PC="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}"
-RUNNER_LOCK_DIR="${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
-RUNNER_LOCK_HOST_PATH="${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}"
+COMPOSE_FILE="${COMPOSE_FILE:-}"
+DOCKERFILE_HASH_FILE="${DOCKERFILE_HASH_FILE:-}"
+REG_TOKEN_CACHE_FILE="${REG_TOKEN_CACHE_FILE:-}"
+REG_TOKEN_CACHE_TTL="${REG_TOKEN_CACHE_TTL:-300}" # seconds, default 5 minutes
 # Compose 文件名：未显式设置时自动拼入 ORG/REPO，避免同一主机多组织时文件冲突
 # 组织级默认：docker-compose.<org>.yml  仓库级默认：docker-compose.<org>.<repo>.yml
-if [[ -z "${COMPOSE_FILE:-}" ]]; then
+if [[ -z "$COMPOSE_FILE" ]]; then
   if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
     COMPOSE_FILE="docker-compose.${ORG}.${REPO}.yml"
   elif [[ -n "${ORG:-}" ]]; then
@@ -56,7 +59,7 @@ if [[ -z "${COMPOSE_FILE:-}" ]]; then
   fi
 fi
 # Dockerfile hash 文件名：同样根据 ORG/REPO 区分，避免多组织时 hash 冲突
-if [[ -z "${DOCKERFILE_HASH_FILE:-}" ]]; then
+if [[ -z "$DOCKERFILE_HASH_FILE" ]]; then
   if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
     DOCKERFILE_HASH_FILE=".dockerfile.${ORG}.${REPO}.sha256"
   elif [[ -n "${ORG:-}" ]]; then
@@ -67,7 +70,7 @@ if [[ -z "${DOCKERFILE_HASH_FILE:-}" ]]; then
 fi
 # REG_TOKEN_CACHE_FILE 文件名：未显式设置时自动拼入 ORG/REPO，避免同一主机多组织时文件冲突
 # 组织级默认：.reg_token.cache.<org>  仓库级默认：.reg_token.cache.<org>.<repo>
-if [[ -z "${REG_TOKEN_CACHE_FILE:-}" ]]; then
+if [[ -z "$REG_TOKEN_CACHE_FILE" ]]; then
   if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
     REG_TOKEN_CACHE_FILE=".reg_token.cache.${ORG}.${REPO}"
   elif [[ -n "${ORG:-}" ]]; then
@@ -76,7 +79,6 @@ if [[ -z "${REG_TOKEN_CACHE_FILE:-}" ]]; then
     REG_TOKEN_CACHE_FILE=".reg_token.cache"
   fi
 fi
-REG_TOKEN_CACHE_TTL="${REG_TOKEN_CACHE_TTL:-300}" # seconds, default 5 minutes
 
 # ------------------------------- Helpers -------------------------------
 shell_usage() {
@@ -101,20 +103,16 @@ shell_usage() {
   printf "  %-${COLW}s %s\n" "./runner.sh ps|ls|list|status" "Show container status and registered Runner status"
   echo
 
-  echo "4. Lock watcher (Cancel 后自动释放板卡锁):"
-  printf "  %-${COLW}s %s\n" "./runner.sh watcher [resource]" "Start lock-watcher (uses same .env; requires RUNNER_LOCK_MONITOR_TOKEN)"
-  echo
-
-  echo "5. Deletion commands:"
+  echo "4. Deletion commands:"
   printf "  %-${COLW}s %s\n" "./runner.sh rm|remove|delete [${RUNNER_NAME_PREFIX}runner-<id> ...]" "Delete specified instances; no args will delete all (confirmation required, -y to skip)"
   printf "  %-${COLW}s %s\n" "./runner.sh purge [-y]" "On top of remove, also delete the dynamically generated docker-compose.yml"
   echo
 
-  echo "6. Image management commands:"
+  echo "5. Image management commands:"
   printf "  %-${COLW}s %s\n" "./runner.sh image" "Rebuild Docker image based on Dockerfile"
   echo
 
-  echo "7. Help"
+  echo "6. Help"
   printf "  %-${COLW}s %s\n" "./runner.sh help" "Show this help"
   echo
 
@@ -123,14 +121,16 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "GH_PAT" "Classic PAT (requires admin:org), used for org API and registration token"
   printf "  %-${KEYW}s %s\n" "ORG" "Organization name or user name (required)"
   printf "  %-${KEYW}s %s\n" "REPO" "Optional repository name (when set, operate on repo-scoped runners under ORG/REPO instead of organization-wide runners)"
-  printf "  %-${KEYW}s %s\n" "RUNNER_NAME_PREFIX" "Container name prefix (default: <hostname>-<org>[-<repo>]-); auto includes ORG/REPO to avoid name conflicts"
+  printf "  %-${KEYW}s %s\n" "RUNNER_NAME_PREFIX" "Runner name prefix"
   printf "  %-${KEYW}s %s\n" "RUNNER_IMAGE" "Image used for compose generation (default ghcr.io/actions/actions-runner:latest)"
   printf "  %-${KEYW}s %s\n" "RUNNER_CUSTOM_IMAGE" "Image tag used for auto-build (can override)"
-  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_PHYTIUMPI" "Lock ID for phytiumpi board (default: board-phytiumpi); same ID = serial across runners"
-  printf "  %-${KEYW}s %s\n" "RUNNER_RESOURCE_ID_ROC_RK3568_PC" "Lock ID for roc-rk3568-pc board (default: board-roc-rk3568-pc); same ID = serial"
-  printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_DIR" "Lock dir in container (default /tmp/github-runner-locks)"
-  printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_HOST_PATH" "Lock dir on host for bind mount (default /tmp/github-runner-locks)"
-  printf "  %-${KEYW}s %s\n" "RUNNER_LOCK_MONITOR_TOKEN" "Fine-grained PAT, Actions read-only (required for watcher)"
+  printf "  %-${KEYW}s %s\n" "RUNNER_BOARD_COUNT" "Number of generic board runners to create"
+  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_LABELS" "Default labels for board runners"
+  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_DEVICES" "Comma-separated device list for board runners"
+  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_GROUP_ADD" "Comma-separated extra groups for board runners"
+  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_VOLUMES" "Semicolon-separated extra volume mounts for board runners"
+  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_ENV" "Semicolon-separated KEY=VALUE envs for board runners"
+  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_COMMAND" "Command executed by board runners"
   echo
   echo "Example workflow runs-on: runs-on: [self-hosted, linux, docker]"
 
@@ -155,6 +155,75 @@ shell_detect_device_gid() {
     local device_path="${1:-}"
     [[ -n "$device_path" && -e "$device_path" ]] || return 1
     stat -c '%g' "$device_path" 2>/dev/null
+}
+
+shell_trim() {
+    local value="${1:-}"
+    value="$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    printf '%s' "$value"
+}
+
+shell_get_indexed_env() {
+    local key="$1" index="$2" default_value="${3:-}"
+    local indexed_key="${key}_${index}"
+    if [[ -n "${!indexed_key-}" ]]; then
+        printf '%s' "${!indexed_key}"
+    else
+        printf '%s' "$default_value"
+    fi
+}
+
+shell_append_csv_yaml_list() {
+    local file="$1" indent="$2" csv="$3"
+    local item trimmed
+    IFS=',' read -r -a _items <<< "$csv"
+    for item in "${_items[@]}"; do
+        trimmed="$(shell_trim "$item")"
+        [[ -n "$trimmed" ]] || continue
+        printf '%s- %s\n' "$indent" "$trimmed" >> "$file"
+    done
+}
+
+shell_append_device_yaml_list() {
+    local file="$1" indent="$2" csv="$3"
+    local item trimmed mapping
+    IFS=',' read -r -a _items <<< "$csv"
+    for item in "${_items[@]}"; do
+        trimmed="$(shell_trim "$item")"
+        [[ -n "$trimmed" ]] || continue
+        if [[ "$trimmed" == *:* ]]; then
+            mapping="$trimmed"
+        else
+            mapping="${trimmed}:${trimmed}"
+        fi
+        printf '%s- %s\n' "$indent" "$mapping" >> "$file"
+    done
+}
+
+shell_append_semicolon_yaml_list() {
+    local file="$1" indent="$2" values="$3"
+    local item trimmed
+    IFS=';' read -r -a _items <<< "$values"
+    for item in "${_items[@]}"; do
+        trimmed="$(shell_trim "$item")"
+        [[ -n "$trimmed" ]] || continue
+        printf '%s- %s\n' "$indent" "$trimmed" >> "$file"
+    done
+}
+
+shell_append_semicolon_env_map() {
+    local file="$1" indent="$2" values="$3"
+    local item trimmed key value
+    IFS=';' read -r -a _items <<< "$values"
+    for item in "${_items[@]}"; do
+        trimmed="$(shell_trim "$item")"
+        [[ -n "$trimmed" ]] || continue
+        [[ "$trimmed" == *"="* ]] || continue
+        key="$(shell_trim "${trimmed%%=*}")"
+        value="$(shell_trim "${trimmed#*=}")"
+        [[ -n "$key" ]] || continue
+        printf '%s%s: "%s"\n' "$indent" "$key" "$value" >> "$file"
+    done
 }
 
 shell_get_org_and_pat() {
@@ -224,9 +293,14 @@ shell_get_org_and_pat() {
 
     # Recalculate RUNNER_NAME_PREFIX if it was auto-generated (not explicitly set by user)
     # Same logic as COMPOSE_FILE etc.: check if empty or equals default value (hostname only)
-    local default_prefix
+    local default_prefix default_org_prefix default_repo_prefix
     default_prefix="$(hostname)-"
-    if [[ -z "${RUNNER_NAME_PREFIX:-}" ]] || [[ "$RUNNER_NAME_PREFIX" == "$default_prefix" ]]; then
+    default_org_prefix="$(hostname)-${ORG}-"
+    default_repo_prefix="$(hostname)-${ORG}-${REPO}-"
+    if [[ -z "${RUNNER_NAME_PREFIX:-}" ]] || \
+       [[ "$RUNNER_NAME_PREFIX" == "$default_prefix" ]] || \
+       [[ -n "${ORG:-}" && "$RUNNER_NAME_PREFIX" == "$default_org_prefix" ]] || \
+       [[ -n "${ORG:-}" && -n "${REPO:-}" && "$RUNNER_NAME_PREFIX" == "$default_repo_prefix" ]]; then
         if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
             RUNNER_NAME_PREFIX="$(hostname)-${ORG}-${REPO}-"
         elif [[ -n "${ORG:-}" ]]; then
@@ -499,46 +573,9 @@ shell_get_compose_file() {
 
 shell_generate_compose_file() {
     local general_count=$1
-    # ════════════════════════════════════════════════════════════════
-    # 第一步：为两种板子 runner 类型定义资源 ID
-    # ════════════════════════════════════════════════════════════════
-    # 硬件板 phytiumpi - 总是启用文件锁
-    local res_phytiumpi="${RUNNER_RESOURCE_ID_PHYTIUMPI:-}"
-    # 硬件板 roc - 总是启用文件锁
-    local res_roc="${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}"
-
-    # ════════════════════════════════════════════════════════════════
-    # 第二步：两种板子 runner 类型的 entrypoint 配置
-    # ════════════════════════════════════════════════════════════════
-    # 设计说明：若设置了资源 ID（RUNNER_RESOURCE_ID_*），板子 runner 使用
-    #   runner-wrapper.sh 来管理文件锁
-    # 普通 runner 始终使用 /home/runner/run.sh（不经过 runner-wrapper）
-    local runner_entrypoint_phytiumpi="/home/runner/run.sh"
-    local runner_entrypoint_roc="/home/runner/run.sh"
-    # 若设置了资源 ID，则改用 runner-wrapper 来处理文件锁
-    [[ -n "$res_phytiumpi" ]] && runner_entrypoint_phytiumpi="/home/runner/runner-wrapper/runner-wrapper.sh"
-    [[ -n "$res_roc" ]] && runner_entrypoint_roc="/home/runner/runner-wrapper/runner-wrapper.sh"
-
-    # ════════════════════════════════════════════════════════════════
-    # 第三步：为两种板子 runner 类型准备额外的环境变量数组
-    # ════════════════════════════════════════════════════════════════
-    # 重复模式说明：以下两部分几乎完全相同，都是：
-    #   1. 定义空数组：extra_env_X=()
-    #   2. 如果有资源 ID，则添加三个环境变量：
-    #      - RUNNER_RESOURCE_ID: 用于锁机制
-    #      - RUNNER_SCRIPT: 给 runner-wrapper 使用的脚本路径
-    #      - RUNNER_LOCK_DIR: 容器内锁文件目录
-    # 原因：两种板子 runner 都可能需要文件锁机制
-    local extra_env_phytiumpi=()
-    local extra_env_roc=()
+    local board_count="${RUNNER_BOARD_COUNT:-0}"
     local extra_proxy_env=()
     local kvm_gid="${RUNNER_KVM_GID:-}"
-    # 只有设置了相应的资源 ID，才为该类型 runner 添加锁相关环境变量
-    [[ -n "$res_phytiumpi" ]] && extra_env_phytiumpi=("      RUNNER_RESOURCE_ID: \"$res_phytiumpi\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
-    [[ -n "$res_roc" ]] && extra_env_roc=("      RUNNER_RESOURCE_ID: \"$res_roc\"" "      RUNNER_SCRIPT: \"/home/runner/run.sh\"" "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"")
-    [[ -n "${HTTP_PROXY:-}" ]] && extra_proxy_env+=("    HTTP_PROXY: \"${HTTP_PROXY}\"")
-    [[ -n "${HTTPS_PROXY:-}" ]] && extra_proxy_env+=("    HTTPS_PROXY: \"${HTTPS_PROXY}\"")
-    [[ -n "${NO_PROXY:-}" ]] && extra_proxy_env+=("    NO_PROXY: \"${NO_PROXY}\"")
 
     # /dev/kvm 的权限检查是按数字 GID 生效
     # 优先使用宿主机当前 /dev/kvm 的实际 GID，必要时允许通过 RUNNER_KVM_GID 覆盖
@@ -551,25 +588,16 @@ shell_generate_compose_file() {
         kvm_gid="993"
         shell_warn "/dev/kvm gid not detected; falling back to legacy gid ${kvm_gid}. Set RUNNER_KVM_GID to override."
     fi
-
-    # ════════════════════════════════════════════════════════════════
-    # 第四步：为两种板子 runner 类型准备卷挂载配置
-    # ════════════════════════════════════════════════════════════════
-    # 重复模式说明：以下两部分完全相同（除变量名），都实现：
-    #   如果设置了资源 ID，则挂载主机的锁文件目录到容器内
-    # 原因：文件锁机制需要在主机和容器间共享锁文件
-    local extra_vol_phytiumpi=""
-    local extra_vol_roc=""
-    # 只有设置了相应的资源 ID，才为该类型 runner 挂载锁文件目录
-    [[ -n "$res_phytiumpi" ]] && extra_vol_phytiumpi="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
-    [[ -n "$res_roc" ]] && extra_vol_roc="      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
+    [[ -n "${HTTP_PROXY:-}" ]] && extra_proxy_env+=("    HTTP_PROXY: \"${HTTP_PROXY}\"")
+    [[ -n "${HTTPS_PROXY:-}" ]] && extra_proxy_env+=("    HTTPS_PROXY: \"${HTTPS_PROXY}\"")
+    [[ -n "${NO_PROXY:-}" ]] && extra_proxy_env+=("    NO_PROXY: \"${NO_PROXY}\"")
 
     # 使用 printf 输出文件头
     printf '%s\n' \
         "# 自动生成的 Docker Compose 配置" \
         "# 机器名: $(hostname)" \
         "# 普通 runner 数量: $general_count" \
-        "# 板子 runner 数量: ${RUNNER_BOARD}" \
+        "# 板子 runner 数量: ${board_count}" \
         "" \
         "# 基础配置" \
         "x-${RUNNER_NAME_PREFIX}runner-base: &runner_base" \
@@ -615,146 +643,47 @@ shell_generate_compose_file() {
             "" >> "${COMPOSE_FILE}"
     done
 
-    # 只有当 RUNNER_BOARD 大于 0 时才生成板子 runners
-    if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
-        # 生成板子 runners
+    # 只有当 RUNNER_BOARD_COUNT 大于 0 时才生成板子 runners
+    if [[ "${board_count}" -gt 0 ]]; then
         echo "  # 板子专用 runners" >> "${COMPOSE_FILE}"
-        
-        # phytiumpi 板子配置
-        printf '%s\n' \
-            "  ${RUNNER_NAME_PREFIX}runner-phytiumpi:" \
-            "    <<: *runner_base" \
-            "    container_name: \"${RUNNER_NAME_PREFIX}runner-phytiumpi\"" \
-            "    command:" \
-            "      - /bin/bash" \
-            "      - -c" \
-            "      - |" \
-            "        set -e" \
-            "        mkdir -p /home/runner/board" \
-            "        cd /home/runner/board" \
-            "        # 尝试下载文件，如果失败则跳过" \
-            "        echo \"Attempting to download phytiumpi files...\"" \
-            "        if curl -fsSL --connect-timeout 30 --max-time 300 https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.18/phytiumpi_linux.tar.gz -o phytiumpi_linux.tar.gz; then" \
-            "            echo \"Download successful, extracting...\"" \
-            "            tar -xzf phytiumpi_linux.tar.gz" \
-            "            echo \"Extraction completed\"" \
-            "        else" \
-            "            echo \"Download failed, continuing with existing files if any...\"" \
-            "        fi" \
-            "        ${runner_entrypoint_phytiumpi}" \
-            "    devices:" \
-            "      - /dev/loop-control:/dev/loop-control" \
-            "      - /dev/loop0:/dev/loop0" \
-            "      - /dev/loop1:/dev/loop1" \
-            "      - /dev/loop2:/dev/loop2" \
-            "      - /dev/loop3:/dev/loop3" \
-            "      - /dev/kvm:/dev/kvm" \
-            "      - /dev/ttyUSB0:/dev/ttyUSB0" \
-            "      - /dev/ttyUSB1:/dev/ttyUSB1" \
-            "    group_add:" \
-            "      - ${kvm_gid}" \
-            "      - dialout" \
-            "    environment:" \
-            "      <<: *runner_env" \
-            "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-phytiumpi\"" \
-            "      RUNNER_LABELS: \"phytiumpi\"" \
-            "      BOARD_POWER_ON: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB1 1\"" \
-            "      BOARD_POWER_OFF: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB1 0\"" \
-            "      BOARD_POWER_RESET: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB1 0 && sleep 2 && mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB1 1\"" \
-            "      BOARD_DTB: \"/home/runner/board/phytiumpi.dtb\"" \
-            "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB0\"" \
-            "      BOARD_COMM_UART_BAUD: \"115200\"" \
-            "      BOARD_COMM_NET_IFACE: \"eno2np1\"" \
-            "      TFTP_DIR: \"phytiumpi\"" \
-            "      BIN_DIR: \"/home/runner/test/phytiumpi\"" \
-            "${extra_env_phytiumpi[@]}" \
-            "    volumes:" \
-            "      - /home/$(whoami)/test/phytiumpi:/home/runner/tftp" \
-            "$extra_vol_phytiumpi" \
-            "      - ./runner-wrapper:/home/runner/runner-wrapper:ro" \
-            "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-data:/home/runner" \
-            "      - ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules:/etc/udev/rules.d" \
-            "" >> "${COMPOSE_FILE}"
-        
-        # roc-rk3568-pc 板子配置
-        printf '%s\n' \
-            "  ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc:" \
-            "    <<: *runner_base" \
-            "    container_name: \"${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc\"" \
-            "    command:" \
-            "      - /bin/bash" \
-            "      - -c" \
-            "      - |" \
-            "        set -e" \
-            "        mkdir -p /home/runner/board" \
-            "        cd /home/runner/board" \
-            "        # 尝试下载文件，如果失败则跳过" \
-            "        echo \"Attempting to download roc-rk3568-pc files...\"" \
-            "        if curl -fsSL --connect-timeout 30 --max-time 300 https://github.com/arceos-hypervisor/axvisor-guest/releases/download/v0.0.18/roc-rk3568-pc_linux.tar.gz -o roc-rk3568-pc_linux.tar.gz; then" \
-            "            echo \"Download successful, extracting...\"" \
-            "            tar -xzf roc-rk3568-pc_linux.tar.gz" \
-            "            echo \"Extraction completed\"" \
-            "        else" \
-            "            echo \"Download failed, continuing with existing files if any...\"" \
-            "        fi" \
-            "        ${runner_entrypoint_roc}" \
-            "    devices:" \
-            "      - /dev/loop-control:/dev/loop-control" \
-            "      - /dev/loop0:/dev/loop0" \
-            "      - /dev/loop1:/dev/loop1" \
-            "      - /dev/loop2:/dev/loop2" \
-            "      - /dev/loop3:/dev/loop3" \
-            "      - /dev/kvm:/dev/kvm" \
-            "      - /dev/ttyUSB2:/dev/ttyUSB2" \
-            "      - /dev/ttyUSB3:/dev/ttyUSB3" \
-            "    group_add:" \
-            "      - ${kvm_gid}" \
-            "      - dialout" \
-            "    environment:" \
-            "      <<: *runner_env" \
-            "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc\"" \
-            "      RUNNER_LABELS: \"roc-rk3568-pc\"" \
-            "      BOARD_POWER_ON: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB2 1\"" \
-            "      BOARD_POWER_OFF: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB2 0\"" \
-            "      BOARD_POWER_RESET: \"mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB2 0 && sleep 2 && mbpoll -m rtu -a 1 -r 1 -t 0 -b 38400 -P none -v /dev/ttyUSB2 1\"" \
-            "      BOARD_DTB: \"/home/runner/board/roc-rk3568-pc.dtb\"" \
-            "      BOARD_COMM_UART_DEV: \"/dev/ttyUSB3\"" \
-            "      BOARD_COMM_UART_BAUD: \"1500000\"" \
-            "${extra_env_roc[@]}" \
-            "    volumes:" \
-            "      - ./runner-wrapper:/home/runner/runner-wrapper:ro" \
-            "$extra_vol_roc" \
-            "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data:/home/runner" \
-            "      - ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:/etc/udev/rules.d" \
-            "" >> "${COMPOSE_FILE}"
+        local i board_labels board_devices board_groups board_env board_volumes board_command
+        for i in $(seq 1 "$board_count"); do
+            board_labels="$(shell_get_indexed_env "BOARD_RUNNER_LABELS" "$i" "${BOARD_RUNNER_LABELS}")"
+            board_devices="$(shell_get_indexed_env "BOARD_RUNNER_DEVICES" "$i" "${BOARD_RUNNER_DEVICES}")"
+            board_groups="$(shell_get_indexed_env "BOARD_RUNNER_GROUP_ADD" "$i" "${BOARD_RUNNER_GROUP_ADD}")"
+            board_env="$(shell_get_indexed_env "BOARD_RUNNER_ENV" "$i" "${BOARD_RUNNER_ENV}")"
+            board_volumes="$(shell_get_indexed_env "BOARD_RUNNER_VOLUMES" "$i" "${BOARD_RUNNER_VOLUMES}")"
+            board_command="$(shell_get_indexed_env "BOARD_RUNNER_COMMAND" "$i" "${BOARD_RUNNER_COMMAND}")"
 
-        # lock-watcher：当配置了 RUNNER_LOCK_MONITOR_TOKEN 时自动加入，与 start/stop 一起启停
-        if [[ -n "${RUNNER_LOCK_MONITOR_TOKEN:-}" ]]; then
-            local watcher_resource_ids=()
-            [[ -n "$res_phytiumpi" ]] && watcher_resource_ids+=("$res_phytiumpi")
-            [[ -n "$res_roc" ]] && watcher_resource_ids+=("$res_roc")
-            local watcher_ids_str="${watcher_resource_ids[*]}"
             printf '%s\n' \
-                "  # lock-watcher：Cancel workflow 后自动清锁，与锁机制配套" \
-                "  ${RUNNER_NAME_PREFIX}lock-watcher:" \
-                "    image: alpine:3.19" \
-                "    container_name: \"${RUNNER_NAME_PREFIX}lock-watcher\"" \
-                "    restart: unless-stopped" \
+                "  ${RUNNER_NAME_PREFIX}runner-board-${i}:" \
+                "    <<: *runner_base" \
+                "    container_name: \"${RUNNER_NAME_PREFIX}runner-board-${i}\"" \
                 "    command:" \
-                "      - /bin/sh" \
-                "      - -c" \
-                "      - \"apk add --no-cache bash curl jq && exec /watcher/lock-watcher.sh\"" \
+                "      - /bin/bash" \
+                "      - -lc" \
+                "      - |" \
+                "        exec ${board_command}" \
+                "    devices:" >> "${COMPOSE_FILE}"
+            shell_append_device_yaml_list "${COMPOSE_FILE}" "      " "${board_devices}"
+            printf '%s\n' \
+                "    group_add:" \
+                "      - ${kvm_gid}" >> "${COMPOSE_FILE}"
+            shell_append_csv_yaml_list "${COMPOSE_FILE}" "      " "${board_groups}"
+            printf '%s\n' \
                 "    environment:" \
-                "      ORG: \"${ORG}\"" \
-                "      REPO: \"${REPO}\"" \
-                "      GITHUB_TOKEN: \"\${RUNNER_LOCK_MONITOR_TOKEN}\"" \
-                "      RUNNER_LOCK_DIR: \"${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}\"" \
-                "      RUNNER_RESOURCE_IDS: \"${watcher_ids_str}\"" \
+                "      <<: *runner_env" \
+                "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-board-${i}\"" \
+                "      RUNNER_LABELS: \"${board_labels}\"" \
+                "      RUNNER_BOARD_INDEX: \"${i}\"" >> "${COMPOSE_FILE}"
+            shell_append_semicolon_env_map "${COMPOSE_FILE}" "      " "${board_env}"
+            printf '%s\n' \
                 "    volumes:" \
-                "      - ./runner-wrapper:/watcher:ro" \
-                "      - ${RUNNER_LOCK_HOST_PATH:-/tmp/github-runner-locks}:${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}" \
-                "" >> "${COMPOSE_FILE}"
-        fi
+                "      - ${RUNNER_NAME_PREFIX}runner-board-${i}-data:/home/runner" \
+                "      - ${RUNNER_NAME_PREFIX}runner-board-${i}-udev-rules:/etc/udev/rules.d" >> "${COMPOSE_FILE}"
+            shell_append_semicolon_yaml_list "${COMPOSE_FILE}" "      " "${board_volumes}"
+            printf '\n' >> "${COMPOSE_FILE}"
+        done
     fi
 
     # 生成 volumes
@@ -768,21 +697,16 @@ shell_generate_compose_file() {
             "    name: ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules" >> "${COMPOSE_FILE}"
     done
     
-    # 只有当 RUNNER_BOARD 大于 0 时才生成板子相关的 volumes
-    if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
-        # 为 phytiumpi 板子生成 volumes
-        printf '%s\n' \
-            "  ${RUNNER_NAME_PREFIX}runner-phytiumpi-data:" \
-            "    name: ${RUNNER_NAME_PREFIX}runner-phytiumpi-data" \
-            "  ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules:" \
-            "    name: ${RUNNER_NAME_PREFIX}runner-phytiumpi-udev-rules" >> "${COMPOSE_FILE}"
-        
-        # 为 roc-rk3568-pc 板子生成 volumes
-        printf '%s\n' \
-            "  ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data:" \
-            "    name: ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-data" \
-            "  ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules:" \
-            "    name: ${RUNNER_NAME_PREFIX}runner-roc-rk3568-pc-udev-rules" >> "${COMPOSE_FILE}"
+    # 只有当 RUNNER_BOARD_COUNT 大于 0 时才生成板子相关的 volumes
+    if [[ "${board_count}" -gt 0 ]]; then
+        local i
+        for i in $(seq 1 "$board_count"); do
+            printf '%s\n' \
+                "  ${RUNNER_NAME_PREFIX}runner-board-${i}-data:" \
+                "    name: ${RUNNER_NAME_PREFIX}runner-board-${i}-data" \
+                "  ${RUNNER_NAME_PREFIX}runner-board-${i}-udev-rules:" \
+                "    name: ${RUNNER_NAME_PREFIX}runner-board-${i}-udev-rules" >> "${COMPOSE_FILE}"
+        done
     fi
 }
 
@@ -1018,30 +942,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             echo
             ;;
 
-        # ./runner.sh watcher [resource]
-        watcher)
-            shell_get_org_and_pat
-            [[ -n "${RUNNER_LOCK_MONITOR_TOKEN:-}" ]] || shell_die "RUNNER_LOCK_MONITOR_TOKEN is required for watcher (use Fine-grained PAT with Actions: Read-only)."
-            export GITHUB_TOKEN="${RUNNER_LOCK_MONITOR_TOKEN}"
-            export ORG REPO
-            export RUNNER_LOCK_DIR="${RUNNER_LOCK_DIR:-/tmp/github-runner-locks}"
-            if [[ -n "${1:-}" ]]; then
-              export RUNNER_RESOURCE_IDS="$1"
-            else
-              ids=()
-              [[ -n "${RUNNER_RESOURCE_ID_ROC_RK3568_PC:-}" ]] && ids+=("${RUNNER_RESOURCE_ID_ROC_RK3568_PC}")
-              [[ -n "${RUNNER_RESOURCE_ID_PHYTIUMPI:-}" ]] && ids+=("${RUNNER_RESOURCE_ID_PHYTIUMPI}")
-              if [[ ${#ids[@]} -eq 0 ]]; then
-                shell_die "No board resource ID set (RUNNER_RESOURCE_ID_ROC_RK3568_PC / RUNNER_RESOURCE_ID_PHYTIUMPI). Set one in .env or pass: ./runner.sh watcher <resource-id>"
-              fi
-              export RUNNER_RESOURCE_IDS="${ids[*]}"
-            fi
-            WATCHER_SCRIPT="$(cd "$(dirname "$0")" && pwd)/runner-wrapper/lock-watcher.sh"
-            [[ -x "${WATCHER_SCRIPT}" ]] || shell_die "lock-watcher.sh not found or not executable: ${WATCHER_SCRIPT}"
-            shell_info "Starting lock-watcher for ${ORG}/${REPO}, resources=${RUNNER_RESOURCE_IDS}"
-            exec "${WATCHER_SCRIPT}"
-            ;;
-
         # ./runner.sh init -n|--count N
         init)
             count=0
@@ -1056,8 +956,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
             RUNNER_IMAGE="$(shell_prepare_runner_image)";
 
-            if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
-                shell_info "Generating $COMPOSE_FILE with $count generic runners and ${RUNNER_BOARD} board-specific runners."
+            if [[ "${RUNNER_BOARD_COUNT}" -gt 0 ]]; then
+                shell_info "Generating $COMPOSE_FILE with $count generic runners and ${RUNNER_BOARD_COUNT} board runners."
             else
                 shell_info "Generating $COMPOSE_FILE with $count generic runners."
             fi
@@ -1076,16 +976,16 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             if [[ -n "$cont_list" ]]; then cont_count=$(echo "$cont_list" | wc -l | tr -d ' '); fi
             
             # 计算通用 runner 的数量
-            if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
-                # 如果启用了板子 runner，则减去 RUNNER_BOARD 个板子 runner，且不少于 0
-                generic_count=$(( cont_count - RUNNER_BOARD ))
-                [[ "$generic_count" -lt 0 ]] && generic_count=0
+            if [[ "${RUNNER_BOARD_COUNT}" -gt 0 ]]; then
+                # 如果启用了板子 runner，则减去 RUNNER_BOARD_COUNT 个板子 runner
+                generic_count=$(( cont_count - RUNNER_BOARD_COUNT ))
+                [[ "$generic_count" -ge 0 ]] || generic_count=0
             else
                 # 如果没有启用板子 runner，则所有容器都是通用 runner
                 generic_count=$cont_count
             fi
-            if [[ "${RUNNER_BOARD}" -gt 0 ]]; then
-                shell_info "Regenerating $COMPOSE_FILE with ${generic_count} existing runners and ${RUNNER_BOARD} board-specific runners."
+            if [[ "${RUNNER_BOARD_COUNT}" -gt 0 ]]; then
+                shell_info "Regenerating $COMPOSE_FILE with ${generic_count} existing runners and ${RUNNER_BOARD_COUNT} board runners."
             else
                 shell_info "Regenerating $COMPOSE_FILE with ${generic_count} existing runners."
             fi
@@ -1123,25 +1023,18 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     shell_info "No Runner containers to start!"
                     exit 0
                 fi
-                shell_info "Starting ${#ids[@]} container(s): ${ids[*]}"
-                if [[ -f "$COMPOSE_FILE" ]]; then
-                    $DC -f "$COMPOSE_FILE" up -d "${ids[@]}"
-                else
-                    docker start "${ids[@]}"
-                fi
             else
-                if [[ -f "$COMPOSE_FILE" ]]; then
-                    shell_info "Starting all services (runners + lock-watcher if configured)"
-                    $DC -f "$COMPOSE_FILE" up -d
-                else
-                    mapfile -t ids < <(docker_list_existing_containers) || ids=()
-                    if [[ ${#ids[@]} -eq 0 ]]; then
-                        shell_info "No Runner containers to start!"
-                        exit 0
-                    fi
-                    shell_info "Starting ${#ids[@]} container(s): ${ids[*]}"
-                    docker start "${ids[@]}"
+                mapfile -t ids < <(docker_list_existing_containers) || ids=()
+                if [[ ${#ids[@]} -eq 0 ]]; then
+                    shell_info "No Runner containers to start!"
+                    exit 0
                 fi
+            fi
+            shell_info "Starting ${#ids[@]} container(s): ${ids[*]}"
+            if [[ -f "$COMPOSE_FILE" ]]; then
+                $DC -f "$COMPOSE_FILE" up -d "${ids[@]}"
+            else
+                docker start "${ids[@]}"
             fi
             ;;
 
@@ -1160,25 +1053,18 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     shell_info "No Runner containers to stop!"
                     exit 0
                 fi
-                shell_info "Stopping ${#ids[@]} container(s): ${ids[*]}"
-                if [[ -f "$COMPOSE_FILE" ]]; then
-                    $DC -f "$COMPOSE_FILE" stop "${ids[@]}"
-                else
-                    docker stop "${ids[@]}"
-                fi
             else
-                if [[ -f "$COMPOSE_FILE" ]]; then
-                    shell_info "Stopping all services (runners + lock-watcher if configured)"
-                    $DC -f "$COMPOSE_FILE" stop
-                else
-                    mapfile -t ids < <(docker_list_existing_containers) || ids=()
-                    if [[ ${#ids[@]} -eq 0 ]]; then
-                        shell_info "No Runner containers to stop!"
-                        exit 0
-                    fi
-                    shell_info "Stopping ${#ids[@]} container(s): ${ids[*]}"
-                    docker stop "${ids[@]}"
+                mapfile -t ids < <(docker_list_existing_containers) || ids=()
+                if [[ ${#ids[@]} -eq 0 ]]; then
+                    shell_info "No Runner containers to stop!"
+                    exit 0
                 fi
+            fi
+            shell_info "Stopping ${#ids[@]} container(s): ${ids[*]}"
+            if [[ -f "$COMPOSE_FILE" ]]; then
+                $DC -f "$COMPOSE_FILE" stop "${ids[@]}"
+            else
+                docker stop "${ids[@]}"
             fi
             ;;
 
@@ -1197,25 +1083,18 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     shell_info "No Runner containers to restart!"
                     exit 0
                 fi
-                shell_info "Restarting ${#ids[@]} container(s): ${ids[*]}"
-                if [[ -f "$COMPOSE_FILE" ]]; then
-                    $DC -f "$COMPOSE_FILE" restart "${ids[@]}"
-                else
-                    docker restart "${ids[@]}"
-                fi
             else
-                if [[ -f "$COMPOSE_FILE" ]]; then
-                    shell_info "Restarting all services (runners + lock-watcher if configured)"
-                    $DC -f "$COMPOSE_FILE" restart
-                else
-                    mapfile -t ids < <(docker_list_existing_containers) || ids=()
-                    if [[ ${#ids[@]} -eq 0 ]]; then
-                        shell_info "No Runner containers to restart!"
-                        exit 0
-                    fi
-                    shell_info "Restarting ${#ids[@]} container(s): ${ids[*]}"
-                    docker restart "${ids[@]}"
+                mapfile -t ids < <(docker_list_existing_containers) || ids=()
+                if [[ ${#ids[@]} -eq 0 ]]; then
+                    shell_info "No Runner containers to restart!"
+                    exit 0
                 fi
+            fi
+            shell_info "Restarting ${#ids[@]} container(s): ${ids[*]}"
+            if [[ -f "$COMPOSE_FILE" ]]; then
+                $DC -f "$COMPOSE_FILE" restart "${ids[@]}"
+            else
+                docker restart "${ids[@]}"
             fi
             ;;
 
@@ -1321,7 +1200,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 shell_info "Successfully built ${RUNNER_CUSTOM_IMAGE} image"
                 
                 # Update hash file
-                new_hash=""
+                local new_hash=""
                 if command -v sha256sum >/dev/null 2>&1; then
                     new_hash=$(sha256sum Dockerfile | awk '{print $1}')
                 elif command -v shasum >/dev/null 2>&1; then

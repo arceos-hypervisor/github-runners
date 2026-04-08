@@ -55,19 +55,9 @@ RUN apt-get update \
        python3-pip \
        python3-tomli \
        python3-sphinx \
-       cmake \
-       clang \
-       libclang-dev \
        ninja-build \
        libslirp0 \
     && rm -rf /var/lib/apt/lists/*
-
-# Ensure bindgen can find libclang.so in a stable location.
-RUN set -eux; \
-    libclang_path="$(ls -1 /usr/lib/llvm-*/lib/libclang.so 2>/dev/null | head -n1)"; \
-    if [ -n "${libclang_path}" ]; then \
-      ln -sf "${libclang_path}" /usr/lib/libclang.so; \
-    fi
 
 # Build and install QEMU 10.1.2 from source 
 RUN mkdir -p /tmp/qemu-build \
@@ -89,12 +79,6 @@ RUN mkdir -p /tmp/qemu-build \
 # 串口访问只能是 root 和 dialout 组，这里直把 runner 用户加入 dialout 组
 RUN usermod -aG dialout runner
 RUN usermod -aG kvm runner
-
-# 多组织共享硬件锁：runner-wrapper 用于多 org 共享同一硬件时的并发控制（Job 级别锁）
-COPY runner-wrapper /home/runner/runner-wrapper
-RUN chmod +x /home/runner/runner-wrapper/runner-wrapper.sh \
-    /home/runner/runner-wrapper/pre-job-lock.sh \
-    /home/runner/runner-wrapper/post-job-lock.sh
 
 # Return to the default user expected by the runner image
 USER runner
