@@ -107,11 +107,11 @@ RUN set -eux; \
     rustc --version;
 
 # Install additional Rust toolchains, targets and components
-RUN rustup toolchain install nightly-2025-12-12 nightly-2026-02-25 && \
-    rustup target add aarch64-unknown-none-softfloat riscv64gc-unknown-none-elf x86_64-unknown-none loongarch64-unknown-none-softfloat --toolchain nightly-2025-12-12 && \
+RUN rustup toolchain install nightly-2026-04-01 nightly-2026-02-25 && \
+    rustup target add aarch64-unknown-none-softfloat riscv64gc-unknown-none-elf x86_64-unknown-none loongarch64-unknown-none-softfloat --toolchain nightly-2026-04-01 && \
     rustup target add aarch64-unknown-none-softfloat riscv64gc-unknown-none-elf x86_64-unknown-none loongarch64-unknown-none-softfloat --toolchain nightly-2026-02-25 && \
     rustup target add aarch64-unknown-none-softfloat riscv64gc-unknown-none-elf x86_64-unknown-none loongarch64-unknown-none-softfloat --toolchain nightly && \
-    rustup component add clippy llvm-tools rust-src rustfmt --toolchain nightly-2025-12-12 && \
+    rustup component add clippy llvm-tools rust-src rustfmt --toolchain nightly-2026-04-01 && \
     rustup component add clippy llvm-tools rust-src rustfmt --toolchain nightly-2026-02-25 && \
     rustup component add clippy llvm-tools rust-src rustfmt --toolchain nightly
 
