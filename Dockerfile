@@ -5,7 +5,12 @@ FROM ghcr.io/actions/actions-runner:latest
 # Switch to root to install packages
 USER root
 
+ARG QEMU_VERSION=10.1.2
+
 ENV DEBIAN_FRONTEND=noninteractive
+
+ENV TZ=Etc/UTC \
+    PATH=/opt/cargo/bin:/opt/qemu-${QEMU_VERSION}/bin:/opt/x86_64-linux-musl-cross/bin:/opt/aarch64-linux-musl-cross/bin:/opt/riscv64-linux-musl-cross/bin:/opt/loongarch64-linux-musl-cross/bin:${PATH}
 
 # Install common build tools and dependencies
 # - build-essential: gcc, g++, make, libc dev headers
@@ -57,15 +62,17 @@ RUN apt-get update \
        python3-sphinx \
        ninja-build \
        libslirp0 \
+       cmake \
     && rm -rf /var/lib/apt/lists/*
 
-# Build and install QEMU 10.1.2 from source 
+# Build and install QEMU from source
 RUN mkdir -p /tmp/qemu-build \
     && cd /tmp/qemu-build \
-    && wget https://download.qemu.org/qemu-10.1.2.tar.xz \
-    && tar -xf qemu-10.1.2.tar.xz \
-    && cd qemu-10.1.2 \
+    && wget "https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz" \
+    && tar -xf "qemu-${QEMU_VERSION}.tar.xz" \
+    && cd "qemu-${QEMU_VERSION}" \
     && ./configure \
+        --prefix="/opt/qemu-${QEMU_VERSION}" \
         --enable-kvm \
         --disable-docs \
         --enable-virtfs \
@@ -75,6 +82,20 @@ RUN mkdir -p /tmp/qemu-build \
     && make install \
     && cd / \
     && rm -rf /tmp/qemu-build
+
+RUN set -eux; \
+    for arch in aarch64 riscv64 x86_64 loongarch64; do \
+      file="${arch}-linux-musl-cross.tgz"; \
+      if ! wget -q "https://github.com/arceos-org/setup-musl/releases/download/prebuilt/${file}" -O "/tmp/${file}"; then \
+        if [ "${arch}" = "loongarch64" ]; then \
+          wget -q "https://github.com/LoongsonLab/oscomp-toolchains-for-oskernel/releases/download/loongarch64-linux-musl-cross-gcc-13.2.0/${file}" -O "/tmp/${file}"; \
+        else \
+          wget -q "https://musl.cc/${file}" -O "/tmp/${file}"; \
+        fi; \
+      fi; \
+      tar -xzf "/tmp/${file}" -C /opt; \
+      rm -f "/tmp/${file}"; \
+    done
 
 # 串口访问只能是 root 和 dialout 组，这里直把 runner 用户加入 dialout 组
 RUN usermod -aG dialout runner
