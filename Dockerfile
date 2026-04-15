@@ -63,6 +63,7 @@ RUN apt-get update \
        ninja-build \
        libslirp0 \
        cmake \
+       clang \
     && rm -rf /var/lib/apt/lists/*
 
 # Build and install QEMU from source
