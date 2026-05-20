@@ -506,7 +506,10 @@ shell_get_compose_file() {
         # If we're in environment section, look for the key
         if [[ $in_env -eq 1 ]]; then
             # Stop if we encounter a key at lower indentation level (end of environment)
-            if [[ "$line" =~ ^[a-zA-Z_] ]] || [[ "$line" =~ ^[[:space:]]{0,2}[a-zA-Z_] ]]; then
+            # {0,4} matches top-level and service-level keys (0-4 spaces), but not environment
+            # entries which are indented at 6+ spaces in the generated compose file
+            if [[ "$line" =~ ^[a-zA-Z_] ]] || [[ "$line" =~ ^[[:space:]]{0,4}[a-zA-Z_] ]]; then
+                in_env=0
                 break
             fi
             
@@ -827,8 +830,15 @@ docker_runner_register() {
                 is_configured=true
             fi
         else
-            if docker exec "$cname" bash -c 'test -f /home/runner/.runner && test -f /home/runner/.credentials' >/dev/null 2>&1; then
-                is_configured=true
+            # docker exec only works on running containers; use docker run with the volume
+            # so that stopped containers are also correctly detected as already configured
+            local _cimg
+            _cimg=$(docker inspect "$cname" --format='{{.Config.Image}}' 2>/dev/null || true)
+            if [[ -n "$_cimg" ]]; then
+                if docker run --rm -v "${cname}-data:/home/runner" "$_cimg" \
+                    bash -c 'test -f /home/runner/.runner && test -f /home/runner/.credentials' >/dev/null 2>&1; then
+                    is_configured=true
+                fi
             fi
         fi
         
@@ -857,7 +867,7 @@ docker_runner_register() {
             "--unattended" "--replace"
         )
         [[ -n "${RUNNER_WORKDIR}" ]] && cfg_opts+=("--work" "${RUNNER_WORKDIR}")
-        [[ "${DISABLE_AUTO_UPDATE}" == "1" ]] && cfg_opts+=("--disableupdate")
+        [[ "${DISABLE_AUTO_UPDATE}" == "1" || "${DISABLE_AUTO_UPDATE}" == "true" ]] && cfg_opts+=("--disableupdate")
         
         shell_info "Registering ${cname} on GitHub with ${cfg_opts[@]}"
         # Pass arguments directly to avoid shell quoting issues
@@ -1157,15 +1167,15 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 shell_info "Successfully built ${RUNNER_CUSTOM_IMAGE} image"
                 
                 # Update hash file
-                local new_hash=""
+                image_new_hash=""
                 if command -v sha256sum >/dev/null 2>&1; then
-                    new_hash=$(sha256sum Dockerfile | awk '{print $1}')
+                    image_new_hash=$(sha256sum Dockerfile | awk '{print $1}')
                 elif command -v shasum >/dev/null 2>&1; then
-                    new_hash=$(shasum -a 256 Dockerfile | awk '{print $1}')
+                    image_new_hash=$(shasum -a 256 Dockerfile | awk '{print $1}')
                 fi
                 
-                if [[ -n "$new_hash" ]]; then
-                    echo "$new_hash" > "$DOCKERFILE_HASH_FILE"
+                if [[ -n "$image_new_hash" ]]; then
+                    echo "$image_new_hash" > "$DOCKERFILE_HASH_FILE"
                     shell_info "Updated Dockerfile hash"
                 fi
             else
