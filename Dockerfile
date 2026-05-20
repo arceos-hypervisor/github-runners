@@ -5,7 +5,7 @@ FROM ghcr.io/actions/actions-runner:latest
 # Switch to root to install packages
 USER root
 
-ARG QEMU_VERSION=10.1.2
+ARG QEMU_VERSION=10.2.1
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -61,9 +61,23 @@ RUN apt-get update \
        python3-tomli \
        python3-sphinx \
        ninja-build \
-       libslirp0 \
+       libslirp-dev \
        cmake \
        clang \
+       libclang-19-dev \
+       # Additional tools from tgoskits-container
+       e2fsprogs \
+       meson \
+       qemu-user-static \
+       xz-utils \
+       curl \
+       libavcodec-dev \
+       libavdevice-dev \
+       libavfilter-dev \
+       libavformat-dev \
+       libavutil-dev \
+       libswresample-dev \
+       libswscale-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Build and install QEMU from source
@@ -74,11 +88,16 @@ RUN mkdir -p /tmp/qemu-build \
     && cd "qemu-${QEMU_VERSION}" \
     && ./configure \
         --prefix="/opt/qemu-${QEMU_VERSION}" \
+        --target-list=loongarch64-softmmu,loongarch64-linux-user,riscv64-softmmu,riscv64-linux-user,aarch64-softmmu,aarch64-linux-user,x86_64-softmmu,x86_64-linux-user \
         --enable-kvm \
         --disable-docs \
         --enable-virtfs \
         --enable-vhost-net \
         --enable-slirp \
+        --disable-gtk \
+        --disable-sdl \
+        --disable-vte \
+        --disable-werror \
     && make -j$(nproc) \
     && make install \
     && cd / \
