@@ -6,36 +6,73 @@ export COMPOSE_IGNORE_ORPHANS=1
 
 ENV_FILE="${ENV_FILE:-.env}"
 
-# ------------------------------- load .env file -------------------------------
-if [[ -f "$ENV_FILE" ]]; then
-  # shellcheck disable=SC2046
-  export $(grep -v '^[[:space:]]*#' "$ENV_FILE" | grep -v '^[[:space:]]*$' | sed 's/^/export /')
-fi
+shell_load_env_file() {
+    local file="$1" line
+    [[ -f "$file" ]] || return 0
 
-# Organization, REG_TOKEN, etc.
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^[[:space:]]*$ || "$line" =~ ^[[:space:]]*# ]] && continue
+        export "$line"
+    done < "$file"
+}
+
+shell_default_runner_prefix() {
+    if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
+        printf '%s-%s-%s-' "$(hostname)" "$ORG" "$REPO"
+    elif [[ -n "${ORG:-}" ]]; then
+        printf '%s-%s-' "$(hostname)" "$ORG"
+    else
+        printf '%s-' "$(hostname)"
+    fi
+}
+
+shell_scoped_file() {
+    local base="$1" ext="${2:-}" suffix=""
+    if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
+        suffix=".${ORG}.${REPO}"
+    elif [[ -n "${ORG:-}" ]]; then
+        suffix=".${ORG}"
+    fi
+    printf '%s%s%s\n' "$base" "$suffix" "$ext"
+}
+
+shell_refresh_derived_config() {
+    if [[ "${RUNNER_NAME_PREFIX_AUTO:-0}" -eq 1 ]]; then
+        RUNNER_NAME_PREFIX="$(shell_default_runner_prefix)"
+    else
+        [[ "$RUNNER_NAME_PREFIX" == *- ]] || RUNNER_NAME_PREFIX="${RUNNER_NAME_PREFIX}-"
+    fi
+
+    [[ "${COMPOSE_FILE_AUTO:-0}" -eq 1 ]] && COMPOSE_FILE="$(shell_scoped_file "docker-compose" ".yml")"
+    [[ "${DOCKERFILE_HASH_FILE_AUTO:-0}" -eq 1 ]] && DOCKERFILE_HASH_FILE="$(shell_scoped_file ".dockerfile" ".sha256")"
+    [[ "${REG_TOKEN_CACHE_FILE_AUTO:-0}" -eq 1 ]] && REG_TOKEN_CACHE_FILE="$(shell_scoped_file ".reg_token.cache")"
+}
+
+# ------------------------------- load .env file -------------------------------
+shell_load_env_file "$ENV_FILE"
+
+# Organization, PAT, etc.
 ORG="${ORG:-}"
 GH_PAT="${GH_PAT:-}"
 REPO="${REPO:-}"
 
 # Runner container related parameters
+RUNNER_NAME_PREFIX_AUTO=0
+COMPOSE_FILE_AUTO=0
+DOCKERFILE_HASH_FILE_AUTO=0
+REG_TOKEN_CACHE_FILE_AUTO=0
+[[ -z "${RUNNER_NAME_PREFIX:-}" ]] && RUNNER_NAME_PREFIX_AUTO=1
+[[ -z "${COMPOSE_FILE:-}" ]] && COMPOSE_FILE_AUTO=1
+[[ -z "${DOCKERFILE_HASH_FILE:-}" ]] && DOCKERFILE_HASH_FILE_AUTO=1
+[[ -z "${REG_TOKEN_CACHE_FILE:-}" ]] && REG_TOKEN_CACHE_FILE_AUTO=1
+
 RUNNER_IMAGE="${RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}"
 RUNNER_CUSTOM_IMAGE="${RUNNER_CUSTOM_IMAGE:-qc-actions-runner:v0.0.1}"
-if [[ -z "${RUNNER_NAME_PREFIX:-}" ]]; then
-  if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
-    RUNNER_NAME_PREFIX="$(hostname)-${ORG}-${REPO}-"
-  elif [[ -n "${ORG:-}" ]]; then
-    RUNNER_NAME_PREFIX="$(hostname)-${ORG}-"
-  else
-    RUNNER_NAME_PREFIX="$(hostname)-"
-  fi
-else
-  [[ "$RUNNER_NAME_PREFIX" == *- ]] || RUNNER_NAME_PREFIX="${RUNNER_NAME_PREFIX}-"
-fi
+RUNNER_NAME_PREFIX="${RUNNER_NAME_PREFIX:-}"
 RUNNER_GROUP="${RUNNER_GROUP:-Default}"
 RUNNER_WORKDIR="${RUNNER_WORKDIR:-}"
 RUNNER_LABELS="${RUNNER_LABELS:-intel}"
-RUNNER_BOARD_COUNT="${RUNNER_BOARD_COUNT:-${RUNNER_BOARD:-2}}"
-RUNNER_BOARD="${RUNNER_BOARD_COUNT}"
+RUNNER_BOARD_COUNT="${RUNNER_BOARD_COUNT:-2}"
 BOARD_RUNNER_LABELS="${BOARD_RUNNER_LABELS:-board}"
 BOARD_RUNNER_DEVICES="${BOARD_RUNNER_DEVICES:-/dev/loop-control,/dev/loop0,/dev/loop1,/dev/loop2,/dev/loop3,/dev/kvm}"
 BOARD_RUNNER_GROUP_ADD="${BOARD_RUNNER_GROUP_ADD:-dialout}"
@@ -47,38 +84,7 @@ COMPOSE_FILE="${COMPOSE_FILE:-}"
 DOCKERFILE_HASH_FILE="${DOCKERFILE_HASH_FILE:-}"
 REG_TOKEN_CACHE_FILE="${REG_TOKEN_CACHE_FILE:-}"
 REG_TOKEN_CACHE_TTL="${REG_TOKEN_CACHE_TTL:-300}" # seconds, default 5 minutes
-# Compose 文件名：未显式设置时自动拼入 ORG/REPO，避免同一主机多组织时文件冲突
-# 组织级默认：docker-compose.<org>.yml  仓库级默认：docker-compose.<org>.<repo>.yml
-if [[ -z "$COMPOSE_FILE" ]]; then
-  if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
-    COMPOSE_FILE="docker-compose.${ORG}.${REPO}.yml"
-  elif [[ -n "${ORG:-}" ]]; then
-    COMPOSE_FILE="docker-compose.${ORG}.yml"
-  else
-    COMPOSE_FILE="docker-compose.yml"
-  fi
-fi
-# Dockerfile hash 文件名：同样根据 ORG/REPO 区分，避免多组织时 hash 冲突
-if [[ -z "$DOCKERFILE_HASH_FILE" ]]; then
-  if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
-    DOCKERFILE_HASH_FILE=".dockerfile.${ORG}.${REPO}.sha256"
-  elif [[ -n "${ORG:-}" ]]; then
-    DOCKERFILE_HASH_FILE=".dockerfile.${ORG}.sha256"
-  else
-    DOCKERFILE_HASH_FILE=".dockerfile.sha256"
-  fi
-fi
-# REG_TOKEN_CACHE_FILE 文件名：未显式设置时自动拼入 ORG/REPO，避免同一主机多组织时文件冲突
-# 组织级默认：.reg_token.cache.<org>  仓库级默认：.reg_token.cache.<org>.<repo>
-if [[ -z "$REG_TOKEN_CACHE_FILE" ]]; then
-  if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
-    REG_TOKEN_CACHE_FILE=".reg_token.cache.${ORG}.${REPO}"
-  elif [[ -n "${ORG:-}" ]]; then
-    REG_TOKEN_CACHE_FILE=".reg_token.cache.${ORG}"
-  else
-    REG_TOKEN_CACHE_FILE=".reg_token.cache"
-  fi
-fi
+shell_refresh_derived_config
 
 # ------------------------------- Helpers -------------------------------
 shell_usage() {
@@ -124,7 +130,7 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "RUNNER_NAME_PREFIX" "Runner name prefix"
   printf "  %-${KEYW}s %s\n" "RUNNER_IMAGE" "Image used for compose generation (default ghcr.io/actions/actions-runner:latest)"
   printf "  %-${KEYW}s %s\n" "RUNNER_CUSTOM_IMAGE" "Image tag used for auto-build (can override)"
-  printf "  %-${KEYW}s %s\n" "RUNNER_BOARD_COUNT" "Number of generic board runners to create"
+  printf "  %-${KEYW}s %s\n" "RUNNER_BOARD_COUNT" "Number of board-specific runners to create"
   printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_LABELS" "Default labels for board runners"
   printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_DEVICES" "Comma-separated device list for board runners"
   printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_GROUP_ADD" "Comma-separated extra groups for board runners"
@@ -161,6 +167,16 @@ shell_trim() {
     local value="${1:-}"
     value="$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
     printf '%s' "$value"
+}
+
+shell_env_upsert() {
+    local file="$1" key="$2" value="$3" tmp
+    [[ -n "$key" && -n "$value" ]] || return 0
+
+    tmp="$(mktemp "${file}.tmp.XXXXXX")"
+    grep -v -E "^[[:space:]]*${key}=" "$file" > "$tmp" || true
+    printf '%s=%s\n' "$key" "$value" >> "$tmp"
+    mv "$tmp" "$file"
 }
 
 shell_get_indexed_env() {
@@ -291,82 +307,19 @@ shell_get_org_and_pat() {
 
     export ORG GH_PAT REPO
 
-    # Recalculate RUNNER_NAME_PREFIX if it was auto-generated (not explicitly set by user)
-    # Same logic as COMPOSE_FILE etc.: check if empty or equals default value (hostname only)
-    local default_prefix default_org_prefix default_repo_prefix
-    default_prefix="$(hostname)-"
-    default_org_prefix="$(hostname)-${ORG}-"
-    default_repo_prefix="$(hostname)-${ORG}-${REPO}-"
-    if [[ -z "${RUNNER_NAME_PREFIX:-}" ]] || \
-       [[ "$RUNNER_NAME_PREFIX" == "$default_prefix" ]] || \
-       [[ -n "${ORG:-}" && "$RUNNER_NAME_PREFIX" == "$default_org_prefix" ]] || \
-       [[ -n "${ORG:-}" && -n "${REPO:-}" && "$RUNNER_NAME_PREFIX" == "$default_repo_prefix" ]]; then
-        if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
-            RUNNER_NAME_PREFIX="$(hostname)-${ORG}-${REPO}-"
-        elif [[ -n "${ORG:-}" ]]; then
-            RUNNER_NAME_PREFIX="$(hostname)-${ORG}-"
-        else
-            RUNNER_NAME_PREFIX="$default_prefix"
-        fi
-        export RUNNER_NAME_PREFIX
-    fi
-
-    # Recalculate file paths based on newly obtained ORG/REPO
-    if [[ -z "${COMPOSE_FILE:-}" ]] || [[ "$COMPOSE_FILE" == "docker-compose.yml" ]]; then
-        if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
-            COMPOSE_FILE="docker-compose.${ORG}.${REPO}.yml"
-        elif [[ -n "${ORG:-}" ]]; then
-            COMPOSE_FILE="docker-compose.${ORG}.yml"
-        else
-            COMPOSE_FILE="docker-compose.yml"
-        fi
-        export COMPOSE_FILE
-    fi
-    if [[ -z "${DOCKERFILE_HASH_FILE:-}" ]] || [[ "$DOCKERFILE_HASH_FILE" == ".dockerfile.sha256" ]]; then
-        if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
-            DOCKERFILE_HASH_FILE=".dockerfile.${ORG}.${REPO}.sha256"
-        elif [[ -n "${ORG:-}" ]]; then
-            DOCKERFILE_HASH_FILE=".dockerfile.${ORG}.sha256"
-        else
-            DOCKERFILE_HASH_FILE=".dockerfile.sha256"
-        fi
-        export DOCKERFILE_HASH_FILE
-    fi
-    if [[ -z "${REG_TOKEN_CACHE_FILE:-}" ]] || [[ "$REG_TOKEN_CACHE_FILE" == ".reg_token.cache" ]]; then
-        if [[ -n "${ORG:-}" && -n "${REPO:-}" ]]; then
-            REG_TOKEN_CACHE_FILE=".reg_token.cache.${ORG}.${REPO}"
-        elif [[ -n "${ORG:-}" ]]; then
-            REG_TOKEN_CACHE_FILE=".reg_token.cache.${ORG}"
-        else
-            REG_TOKEN_CACHE_FILE=".reg_token.cache"
-        fi
-        export REG_TOKEN_CACHE_FILE
-    fi
+    # Recalculate auto-derived names after interactive ORG/REPO input.
+    shell_refresh_derived_config
+    export RUNNER_NAME_PREFIX COMPOSE_FILE DOCKERFILE_HASH_FILE REG_TOKEN_CACHE_FILE
 
     # Persist to .env (ENV_FILE) if values were entered interactively
     if [[ $wrote_env -eq 1 ]]; then
-        local env_file="$ENV_FILE" tmp
+        local env_file="$ENV_FILE"
         touch "$env_file"
         chmod 600 "$env_file" 2>/dev/null || true
 
-        if [[ -n "${ORG:-}" ]]; then
-            tmp="$(mktemp "${env_file}.tmp.XXXXXX")"
-            grep -v -E '^[[:space:]]*ORG=' "$env_file" > "$tmp" || true
-            printf 'ORG=%s\n' "$ORG" >> "$tmp"
-            mv "$tmp" "$env_file"
-        fi
-        if [[ -n "${GH_PAT:-}" ]]; then
-            tmp="$(mktemp "${env_file}.tmp.XXXXXX")"
-            grep -v -E '^[[:space:]]*GH_PAT=' "$env_file" > "$tmp" || true
-            printf 'GH_PAT=%s\n' "$GH_PAT" >> "$tmp"
-            mv "$tmp" "$env_file"
-        fi
-        if [[ -n "${REPO:-}" ]]; then
-            tmp="$(mktemp "${env_file}.tmp.XXXXXX")"
-            grep -v -E '^[[:space:]]*REPO=' "$env_file" > "$tmp" || true
-            printf 'REPO=%s\n' "$REPO" >> "$tmp"
-            mv "$tmp" "$env_file"
-        fi
+        shell_env_upsert "$env_file" "ORG" "${ORG:-}"
+        shell_env_upsert "$env_file" "GH_PAT" "${GH_PAT:-}"
+        shell_env_upsert "$env_file" "REPO" "${REPO:-}"
     fi
 }
 
