@@ -15,10 +15,10 @@ This repository provides scripts and tools for creating, managing, and registeri
 
 - Batch management of multiple runner containers using Docker Compose
 - Support for organization-level and repository-level runners (controlled by `REPO` variable)
-- Per-instance custom labels via `BOARD_RUNNERS`
+- Per-runner configuration for labels, devices, groups, volumes, environment variables, and commands
 - Automatic custom image rebuild when `Dockerfile` changes
 - Cached registration tokens to reduce GitHub API requests
-- Full lifecycle commands: `init`, `register`, `start`, `stop`, `restart`, `logs`, `list`, `rm`, `purge`
+- Full lifecycle commands: `init`, `compose`, `register`, `start`, `stop`, `restart`, `log`, `list`, `rm`, `purge`, `image`
 
 ## Usage
 
@@ -42,15 +42,15 @@ chmod +x runner.sh
 | Command | Description |
 |---------|-------------|
 | `./runner.sh init [-n N]` | Generate and start N runners |
+| `./runner.sh compose` | Regenerate compose file with existing runners |
 | `./runner.sh register [runner-<id> ...]` | Register specified instances; without arguments, registers all unconfigured instances |
 | `./runner.sh start/stop/restart [runner-<id> ...]` | Start/stop/restart containers |
-| `./runner.sh logs runner-<id>` | View instance logs |
+| `./runner.sh log runner-<id>` | Follow instance logs |
 | `./runner.sh ps` | Show container status |
 | `./runner.sh list` | Show local container status and GitHub registration status |
 | `./runner.sh rm [runner-<id> ...] [-y]` | Unregister and remove containers; `-y` skips confirmation |
 | `./runner.sh purge [-y]` | Remove containers and generated files (`docker-compose.yml`, caches, etc.) |
-
-> **Note**: The `init` command creates two hardware-based runners (phytiumpi and roc-rk3568-pc) by default. This behavior is not controlled by the `-n` parameter.
+| `./runner.sh image` | Rebuild the custom runner image |
 
 ## Configuration
 
@@ -58,15 +58,26 @@ chmod +x runner.sh
 
 The default prefix automatically includes `ORG` (and `REPO` if set), formatted as `<hostname>-<org>-runner-N` or `<hostname>-<org>-<repo>-runner-N` to avoid naming conflicts when multiple orgs/repos run on the same host. Override with `RUNNER_NAME_PREFIX`.
 
-### BOARD_RUNNERS Format
+### Runner Configuration
 
+All runners use the same naming format, `${RUNNER_NAME_PREFIX}runner-N`. The `-n` option controls the total number of runners. Use the default `RUNNER_*` variables for all runners, and append an index such as `_1` or `_2` to override one runner.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNNER_LABELS` | `intel` | Labels used when registering runners |
+| `RUNNER_DEVICES` | `/dev/loop-control,/dev/loop0,/dev/loop1,/dev/loop2,/dev/loop3,/dev/kvm` | Comma-separated device mappings; entries without `:` are mapped to the same path in the container |
+| `RUNNER_GROUP_ADD` | `dialout` | Comma-separated extra groups added to runner containers |
+| `RUNNER_VOLUMES` | empty | Semicolon-separated extra volume mounts |
+| `RUNNER_ENV` | empty | Semicolon-separated `KEY=VALUE` environment variables |
+| `RUNNER_COMMAND` | `/home/runner/run.sh` | Command executed by runners |
+
+Example per-runner overrides:
+
+```bash
+RUNNER_LABELS_2=board,phytiumpi,arm64
+RUNNER_DEVICES_2=/dev/kvm,/dev/ttyUSB0:/dev/ttyUSB0
+RUNNER_ENV_2='BOARD_NAME=phytiumpi;SERIAL=/dev/ttyUSB0'
 ```
-name:label1[,label2];name2:label1
-```
-
-Example: `phytiumpi:arm64,phytiumpi;roc-rk3568-pc:arm64,roc-rk3568-pc`
-
-Board instances will only use labels defined in `BOARD_RUNNERS` and will not append global `RUNNER_LABELS`.
 
 ### Other Settings
 

@@ -15,10 +15,10 @@
 
 - 使用 Docker Compose 批量管理多个 Runner 容器
 - 支持组织级与仓库级 Runner（通过 `REPO` 变量切换）
-- 支持针对特定实例的自定义标签（`BOARD_RUNNERS`）
+- 支持按 Runner 配置标签、设备、用户组、卷、环境变量和启动命令
 - 检测 `Dockerfile` 变更并自动重建自定义镜像
 - 缓存注册令牌以减少 GitHub API 请求
-- 提供完整生命周期命令：`init`、`register`、`start`、`stop`、`restart`、`logs`、`list`、`rm`、`purge`
+- 提供完整生命周期命令：`init`、`compose`、`register`、`start`、`stop`、`restart`、`log`、`list`、`rm`、`purge`、`image`
 
 ## 使用
 
@@ -42,15 +42,15 @@ chmod +x runner.sh
 | 命令 | 说明 |
 |------|------|
 | `./runner.sh init [-n N]` | 生成并启动 N 个 Runner |
+| `./runner.sh compose` | 基于已有 Runner 重新生成 compose 文件 |
 | `./runner.sh register [runner-<id> ...]` | 注册指定实例；不带参数则注册所有未配置实例 |
 | `./runner.sh start/stop/restart [runner-<id> ...]` | 启动/停止/重启容器 |
-| `./runner.sh logs runner-<id>` | 查看实例日志 |
+| `./runner.sh log runner-<id>` | 跟随查看实例日志 |
 | `./runner.sh ps` | 显示容器状态 |
 | `./runner.sh list` | 显示本地容器状态及 GitHub 注册状态 |
 | `./runner.sh rm [runner-<id> ...] [-y]` | 取消注册并删除容器；`-y` 跳过确认 |
 | `./runner.sh purge [-y]` | 删除容器并移除生成文件（`docker-compose.yml`、缓存等） |
-
-> **注意**：`init` 命令默认会创建两个基于硬件的 Runner（phytiumpi 和 roc-rk3568-pc），此行为不受 `-n` 参数控制。
+| `./runner.sh image` | 重新构建自定义 Runner 镜像 |
 
 ## 配置说明
 
@@ -58,15 +58,26 @@ chmod +x runner.sh
 
 默认前缀自动包含 `ORG`（及 `REPO`），格式为 `<hostname>-<org>-runner-N` 或 `<hostname>-<org>-<repo>-runner-N`，避免多组织/多仓库容器重名。可通过 `RUNNER_NAME_PREFIX` 覆盖。
 
-### BOARD_RUNNERS 格式
+### Runner 配置
 
+所有 Runner 都使用同一种命名格式：`${RUNNER_NAME_PREFIX}runner-N`。`-n` 控制 Runner 总数。默认 `RUNNER_*` 变量作用于所有 Runner，也可以追加 `_1`、`_2` 这类序号为单个 Runner 覆盖配置。
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `RUNNER_LABELS` | `intel` | 注册 Runner 时使用的标签 |
+| `RUNNER_DEVICES` | `/dev/loop-control,/dev/loop0,/dev/loop1,/dev/loop2,/dev/loop3,/dev/kvm` | 逗号分隔的设备映射；没有 `:` 的条目会映射到容器内相同路径 |
+| `RUNNER_GROUP_ADD` | `dialout` | 逗号分隔的额外用户组 |
+| `RUNNER_VOLUMES` | 空 | 分号分隔的额外卷挂载 |
+| `RUNNER_ENV` | 空 | 分号分隔的 `KEY=VALUE` 环境变量 |
+| `RUNNER_COMMAND` | `/home/runner/run.sh` | Runner 执行的启动命令 |
+
+按 Runner 覆盖配置示例：
+
+```bash
+RUNNER_LABELS_2=board,phytiumpi,arm64
+RUNNER_DEVICES_2=/dev/kvm,/dev/ttyUSB0:/dev/ttyUSB0
+RUNNER_ENV_2='BOARD_NAME=phytiumpi;SERIAL=/dev/ttyUSB0'
 ```
-name:label1[,label2];name2:label1
-```
-
-示例：`phytiumpi:arm64,phytiumpi;roc-rk3568-pc:arm64,roc-rk3568-pc`
-
-开发板实例将仅使用 `BOARD_RUNNERS` 中定义的标签，不会追加全局 `RUNNER_LABELS`。
 
 ### 其他配置
 

@@ -72,13 +72,11 @@ RUNNER_NAME_PREFIX="${RUNNER_NAME_PREFIX:-}"
 RUNNER_GROUP="${RUNNER_GROUP:-Default}"
 RUNNER_WORKDIR="${RUNNER_WORKDIR:-}"
 RUNNER_LABELS="${RUNNER_LABELS:-intel}"
-RUNNER_BOARD_COUNT="${RUNNER_BOARD_COUNT:-2}"
-BOARD_RUNNER_LABELS="${BOARD_RUNNER_LABELS:-board}"
-BOARD_RUNNER_DEVICES="${BOARD_RUNNER_DEVICES:-/dev/loop-control,/dev/loop0,/dev/loop1,/dev/loop2,/dev/loop3,/dev/kvm}"
-BOARD_RUNNER_GROUP_ADD="${BOARD_RUNNER_GROUP_ADD:-dialout}"
-BOARD_RUNNER_VOLUMES="${BOARD_RUNNER_VOLUMES:-}"
-BOARD_RUNNER_ENV="${BOARD_RUNNER_ENV:-}"
-BOARD_RUNNER_COMMAND="${BOARD_RUNNER_COMMAND:-/home/runner/run.sh}"
+RUNNER_DEVICES="${RUNNER_DEVICES:-/dev/loop-control,/dev/loop0,/dev/loop1,/dev/loop2,/dev/loop3,/dev/kvm}"
+RUNNER_GROUP_ADD="${RUNNER_GROUP_ADD:-dialout}"
+RUNNER_VOLUMES="${RUNNER_VOLUMES:-}"
+RUNNER_ENV="${RUNNER_ENV:-}"
+RUNNER_COMMAND="${RUNNER_COMMAND:-/home/runner/run.sh}"
 DISABLE_AUTO_UPDATE="${DISABLE_AUTO_UPDATE:-false}"
 COMPOSE_FILE="${COMPOSE_FILE:-}"
 DOCKERFILE_HASH_FILE="${DOCKERFILE_HASH_FILE:-}"
@@ -94,7 +92,7 @@ shell_usage() {
 
   echo "1. Creation commands:"
   printf "  %-${COLW}s %s\n" "./runner.sh init -n N" "Generate docker-compose.yml then create runners and start"
-  printf "  %-${COLW}s %s\n" "./runner.sh compose" "Regenerate docker-compose.yml with existing generic and board-specific runners"
+  printf "  %-${COLW}s %s\n" "./runner.sh compose" "Regenerate docker-compose.yml with existing runners"
   echo
 
   echo "2. Instance operation commands:"
@@ -130,13 +128,13 @@ shell_usage() {
   printf "  %-${KEYW}s %s\n" "RUNNER_NAME_PREFIX" "Runner name prefix"
   printf "  %-${KEYW}s %s\n" "RUNNER_IMAGE" "Image used for compose generation (default ghcr.io/actions/actions-runner:latest)"
   printf "  %-${KEYW}s %s\n" "RUNNER_CUSTOM_IMAGE" "Image tag used for auto-build (can override)"
-  printf "  %-${KEYW}s %s\n" "RUNNER_BOARD_COUNT" "Number of board-specific runners to create"
-  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_LABELS" "Default labels for board runners"
-  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_DEVICES" "Comma-separated device list for board runners"
-  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_GROUP_ADD" "Comma-separated extra groups for board runners"
-  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_VOLUMES" "Semicolon-separated extra volume mounts for board runners"
-  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_ENV" "Semicolon-separated KEY=VALUE envs for board runners"
-  printf "  %-${KEYW}s %s\n" "BOARD_RUNNER_COMMAND" "Command executed by board runners"
+  printf "  %-${KEYW}s %s\n" "RUNNER_LABELS" "Default labels for runners"
+  printf "  %-${KEYW}s %s\n" "RUNNER_DEVICES" "Comma-separated device list for runners"
+  printf "  %-${KEYW}s %s\n" "RUNNER_GROUP_ADD" "Comma-separated extra groups for runners"
+  printf "  %-${KEYW}s %s\n" "RUNNER_VOLUMES" "Semicolon-separated extra volume mounts for runners"
+  printf "  %-${KEYW}s %s\n" "RUNNER_ENV" "Semicolon-separated KEY=VALUE envs for runners"
+  printf "  %-${KEYW}s %s\n" "RUNNER_COMMAND" "Command executed by runners"
+  printf "  %-${KEYW}s %s\n" "RUNNER_*_<N>" "Per-runner overrides, e.g. RUNNER_LABELS_1 or RUNNER_DEVICES_2"
   echo
   echo "Example workflow runs-on: runs-on: [self-hosted, linux, docker]"
 
@@ -532,8 +530,7 @@ shell_get_compose_file() {
 }
 
 shell_generate_compose_file() {
-    local general_count=$1
-    local board_count="${RUNNER_BOARD_COUNT:-0}"
+    local runner_count=$1
     local extra_proxy_env=()
     local kvm_gid="${RUNNER_KVM_GID:-}"
 
@@ -556,8 +553,7 @@ shell_generate_compose_file() {
     printf '%s\n' \
         "# 自动生成的 Docker Compose 配置" \
         "# 机器名: $(hostname)" \
-        "# 普通 runner 数量: $general_count" \
-        "# 板子 runner 数量: ${board_count}" \
+        "# runner 数量: $runner_count" \
         "" \
         "# 基础配置" \
         "x-${RUNNER_NAME_PREFIX}runner-base: &runner_base" \
@@ -576,98 +572,56 @@ shell_generate_compose_file() {
         "" \
         "services:" > "${COMPOSE_FILE}"
 
-    # 生成普通 runners
-    echo "  # 普通 runners" >> ${COMPOSE_FILE}
-    for i in $(seq 1 $general_count); do
+    # 生成 runners。差异通过 RUNNER_*_<index> 环境变量按实例覆盖。
+    local i runner_labels runner_devices runner_groups runner_env runner_volumes runner_command
+    for i in $(seq 1 "$runner_count"); do
+        runner_labels="$(shell_get_indexed_env "RUNNER_LABELS" "$i" "${RUNNER_LABELS}")"
+        runner_devices="$(shell_get_indexed_env "RUNNER_DEVICES" "$i" "${RUNNER_DEVICES}")"
+        runner_groups="$(shell_get_indexed_env "RUNNER_GROUP_ADD" "$i" "${RUNNER_GROUP_ADD}")"
+        runner_env="$(shell_get_indexed_env "RUNNER_ENV" "$i" "${RUNNER_ENV}")"
+        runner_volumes="$(shell_get_indexed_env "RUNNER_VOLUMES" "$i" "${RUNNER_VOLUMES}")"
+        runner_command="$(shell_get_indexed_env "RUNNER_COMMAND" "$i" "${RUNNER_COMMAND}")"
+
         printf '%s\n' \
             "  ${RUNNER_NAME_PREFIX}runner-${i}:" \
             "    <<: *runner_base" \
             "    container_name: \"${RUNNER_NAME_PREFIX}runner-${i}\"" \
-            "    command: [\"/home/runner/run.sh\"]" \
-            "    devices:" \
-            "      - /dev/loop-control:/dev/loop-control" \
-            "      - /dev/loop0:/dev/loop0" \
-            "      - /dev/loop1:/dev/loop1" \
-            "      - /dev/loop2:/dev/loop2" \
-            "      - /dev/loop3:/dev/loop3" \
-            "      - /dev/kvm:/dev/kvm" \
+            "    command:" \
+            "      - /bin/bash" \
+            "      - -lc" \
+            "      - |" \
+            "        exec ${runner_command}" \
+            "    devices:" >> "${COMPOSE_FILE}"
+        shell_append_device_yaml_list "${COMPOSE_FILE}" "      " "${runner_devices}"
+        printf '%s\n' \
             "    group_add:" \
-            "      - ${kvm_gid}" \
+            "      - ${kvm_gid}" >> "${COMPOSE_FILE}"
+        shell_append_csv_yaml_list "${COMPOSE_FILE}" "      " "${runner_groups}"
+        printf '%s\n' \
             "    environment:" \
             "      <<: *runner_env" \
             "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-${i}\"" \
-            "      RUNNER_LABELS: \"${RUNNER_LABELS}\"" \
+            "      RUNNER_LABELS: \"${runner_labels}\"" \
+            "      RUNNER_INDEX: \"${i}\"" >> "${COMPOSE_FILE}"
+        shell_append_semicolon_env_map "${COMPOSE_FILE}" "      " "${runner_env}"
+        printf '%s\n' \
             "    volumes:" \
             "      - ${RUNNER_NAME_PREFIX}runner-${i}-data:/home/runner" \
-            "      - ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules:/etc/udev/rules.d" \
-            "" >> "${COMPOSE_FILE}"
+            "      - ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules:/etc/udev/rules.d" >> "${COMPOSE_FILE}"
+        shell_append_semicolon_yaml_list "${COMPOSE_FILE}" "      " "${runner_volumes}"
+        printf '\n' >> "${COMPOSE_FILE}"
     done
-
-    # 只有当 RUNNER_BOARD_COUNT 大于 0 时才生成板子 runners
-    if [[ "${board_count}" -gt 0 ]]; then
-        echo "  # 板子专用 runners" >> "${COMPOSE_FILE}"
-        local i board_labels board_devices board_groups board_env board_volumes board_command
-        for i in $(seq 1 "$board_count"); do
-            board_labels="$(shell_get_indexed_env "BOARD_RUNNER_LABELS" "$i" "${BOARD_RUNNER_LABELS}")"
-            board_devices="$(shell_get_indexed_env "BOARD_RUNNER_DEVICES" "$i" "${BOARD_RUNNER_DEVICES}")"
-            board_groups="$(shell_get_indexed_env "BOARD_RUNNER_GROUP_ADD" "$i" "${BOARD_RUNNER_GROUP_ADD}")"
-            board_env="$(shell_get_indexed_env "BOARD_RUNNER_ENV" "$i" "${BOARD_RUNNER_ENV}")"
-            board_volumes="$(shell_get_indexed_env "BOARD_RUNNER_VOLUMES" "$i" "${BOARD_RUNNER_VOLUMES}")"
-            board_command="$(shell_get_indexed_env "BOARD_RUNNER_COMMAND" "$i" "${BOARD_RUNNER_COMMAND}")"
-
-            printf '%s\n' \
-                "  ${RUNNER_NAME_PREFIX}runner-board-${i}:" \
-                "    <<: *runner_base" \
-                "    container_name: \"${RUNNER_NAME_PREFIX}runner-board-${i}\"" \
-                "    command:" \
-                "      - /bin/bash" \
-                "      - -lc" \
-                "      - |" \
-                "        exec ${board_command}" \
-                "    devices:" >> "${COMPOSE_FILE}"
-            shell_append_device_yaml_list "${COMPOSE_FILE}" "      " "${board_devices}"
-            printf '%s\n' \
-                "    group_add:" \
-                "      - ${kvm_gid}" >> "${COMPOSE_FILE}"
-            shell_append_csv_yaml_list "${COMPOSE_FILE}" "      " "${board_groups}"
-            printf '%s\n' \
-                "    environment:" \
-                "      <<: *runner_env" \
-                "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-board-${i}\"" \
-                "      RUNNER_LABELS: \"${board_labels}\"" \
-                "      RUNNER_BOARD_INDEX: \"${i}\"" >> "${COMPOSE_FILE}"
-            shell_append_semicolon_env_map "${COMPOSE_FILE}" "      " "${board_env}"
-            printf '%s\n' \
-                "    volumes:" \
-                "      - ${RUNNER_NAME_PREFIX}runner-board-${i}-data:/home/runner" \
-                "      - ${RUNNER_NAME_PREFIX}runner-board-${i}-udev-rules:/etc/udev/rules.d" >> "${COMPOSE_FILE}"
-            shell_append_semicolon_yaml_list "${COMPOSE_FILE}" "      " "${board_volumes}"
-            printf '\n' >> "${COMPOSE_FILE}"
-        done
-    fi
 
     # 生成 volumes
     echo "volumes:" >> ${COMPOSE_FILE}
     
-    for i in $(seq 1 $general_count); do
+    for i in $(seq 1 "$runner_count"); do
         printf '%s\n' \
             "  ${RUNNER_NAME_PREFIX}runner-${i}-data:" \
             "    name: ${RUNNER_NAME_PREFIX}runner-${i}-data" \
             "  ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules:" \
             "    name: ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules" >> "${COMPOSE_FILE}"
     done
-    
-    # 只有当 RUNNER_BOARD_COUNT 大于 0 时才生成板子相关的 volumes
-    if [[ "${board_count}" -gt 0 ]]; then
-        local i
-        for i in $(seq 1 "$board_count"); do
-            printf '%s\n' \
-                "  ${RUNNER_NAME_PREFIX}runner-board-${i}-data:" \
-                "    name: ${RUNNER_NAME_PREFIX}runner-board-${i}-data" \
-                "  ${RUNNER_NAME_PREFIX}runner-board-${i}-udev-rules:" \
-                "    name: ${RUNNER_NAME_PREFIX}runner-board-${i}-udev-rules" >> "${COMPOSE_FILE}"
-        done
-    fi
 }
 
 # ------------------------------- GitHub API helpers -------------------------------
@@ -923,11 +877,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
             RUNNER_IMAGE="$(shell_prepare_runner_image)";
 
-            if [[ "${RUNNER_BOARD_COUNT}" -gt 0 ]]; then
-                shell_info "Generating $COMPOSE_FILE with $count generic runners and ${RUNNER_BOARD_COUNT} board runners."
-            else
-                shell_info "Generating $COMPOSE_FILE with $count generic runners."
-            fi
+            shell_info "Generating $COMPOSE_FILE with $count runners."
 
             shell_generate_compose_file "$count"
 
@@ -941,24 +891,10 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             cont_count=0
             cont_list="$(docker_list_existing_containers)"
             if [[ -n "$cont_list" ]]; then cont_count=$(echo "$cont_list" | wc -l | tr -d ' '); fi
-            
-            # 计算通用 runner 的数量
-            if [[ "${RUNNER_BOARD_COUNT}" -gt 0 ]]; then
-                # 如果启用了板子 runner，则减去 RUNNER_BOARD_COUNT 个板子 runner
-                generic_count=$(( cont_count - RUNNER_BOARD_COUNT ))
-                [[ "$generic_count" -ge 0 ]] || generic_count=0
-            else
-                # 如果没有启用板子 runner，则所有容器都是通用 runner
-                generic_count=$cont_count
-            fi
-            if [[ "${RUNNER_BOARD_COUNT}" -gt 0 ]]; then
-                shell_info "Regenerating $COMPOSE_FILE with ${generic_count} existing runners and ${RUNNER_BOARD_COUNT} board runners."
-            else
-                shell_info "Regenerating $COMPOSE_FILE with ${generic_count} existing runners."
-            fi
+            shell_info "Regenerating $COMPOSE_FILE with ${cont_count} existing runners."
             RUNNER_IMAGE="$(shell_prepare_runner_image)";
             REG_TOKEN="$(shell_get_reg_token)"
-            shell_generate_compose_file "$generic_count"
+            shell_generate_compose_file "$cont_count"
             ;;
 
         # ./runner.sh register [${RUNNER_NAME_PREFIX}runner-<id> ...]
