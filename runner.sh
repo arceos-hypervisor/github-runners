@@ -376,7 +376,11 @@ shell_delete_all_execute() {
 
     if command -v jq >/dev/null 2>&1; then
         resp=$(github_api GET "/actions/runners?per_page=100" || echo "{}")
-        org_count=$(echo "$resp" | jq -r --arg p "$prefix" '[.runners[] | select(.name|startswith($p))] | length' 2>/dev/null || echo 0)
+        if github_response_has_runner_list "$resp"; then
+            org_count=$(echo "$resp" | jq -r --arg p "$prefix" '[.runners[] | select(.name|startswith($p))] | length' 2>/dev/null || echo 0)
+        else
+            github_print_api_error "$resp"
+        fi
     else
         shell_warn "jq is not installed; cannot count organization runners. Will only remove local containers/volumes and attempt best-effort unregister."
     fi
@@ -432,45 +436,6 @@ shell_get_reg_token() {
     printf '%s\n%s\n' "$now" "$REG_TOKEN" > "$REG_TOKEN_CACHE_FILE"
     # Keep compose file in sync when fetching a fresh token
     printf '%s\n' "$REG_TOKEN"
-}
-
-# Update a field in docker-compose.yml under environment (mapping or list styles)
-# Usage: shell_update_compose_file KEY VALUE
-shell_update_compose_file() {
-    local key="$1" token="$2"
-    [[ -n "$key" && -n "$token" ]] || return 0
-    local file="$COMPOSE_FILE"
-    [[ -f "$file" ]] || { shell_warn "${file} not found; skip updating ${key}." >&2; return 0; }
-    
-    local tmpfile updated
-    tmpfile=$(mktemp "${file}.tmp.XXXXXX") || return 1
-    updated=0
-    
-    while IFS= read -r line; do
-        # Mapping style: KEY: "value" (preserve indentation and spacing)
-        if [[ "$line" =~ ^[[:space:]]*${key}[[:space:]]*: ]]; then
-            # Extract leading whitespace and preserve it
-            local indent="${line%%[^ ]*}"
-            printf '%s%s: "%s"\n' "$indent" "$key" "$token" >> "$tmpfile"
-            updated=1
-        # List style: - KEY="value" (preserve indentation and dash)
-        elif [[ "$line" =~ ^[[:space:]]*-[[:space:]]*${key}= ]]; then
-            # Extract leading spaces and dash
-            local prefix="${line%${key}*}"
-            printf '%s%s="%s"\n' "$prefix" "$key" "$token" >> "$tmpfile"
-            updated=1
-        else
-            printf '%s\n' "$line" >> "$tmpfile"
-        fi
-    done < "$file"
-    
-    if [[ $updated -eq 1 ]]; then
-        mv "$tmpfile" "$file"
-        shell_info "Updated ${key} in ${file}." >&2
-    else
-        rm -f "$tmpfile"
-        shell_warn "${key} key not found in ${file}; ensure your compose defines it under environment." >&2
-    fi
 }
 
 # Helper: Extract an environment variable value for a specific service from docker-compose.yml
@@ -545,9 +510,9 @@ shell_generate_compose_file() {
         kvm_gid="993"
         shell_warn "/dev/kvm gid not detected; falling back to legacy gid ${kvm_gid}. Set RUNNER_KVM_GID to override."
     fi
-    [[ -n "${HTTP_PROXY:-}" ]] && extra_proxy_env+=("    HTTP_PROXY: \"${HTTP_PROXY}\"")
-    [[ -n "${HTTPS_PROXY:-}" ]] && extra_proxy_env+=("    HTTPS_PROXY: \"${HTTPS_PROXY}\"")
-    [[ -n "${NO_PROXY:-}" ]] && extra_proxy_env+=("    NO_PROXY: \"${NO_PROXY}\"")
+    [[ -n "${HTTP_PROXY:-}" ]] && extra_proxy_env+=("      HTTP_PROXY: \"${HTTP_PROXY}\"")
+    [[ -n "${HTTPS_PROXY:-}" ]] && extra_proxy_env+=("      HTTPS_PROXY: \"${HTTPS_PROXY}\"")
+    [[ -n "${NO_PROXY:-}" ]] && extra_proxy_env+=("      NO_PROXY: \"${NO_PROXY}\"")
 
     # 使用 printf 输出文件头
     printf '%s\n' \
@@ -559,14 +524,6 @@ shell_generate_compose_file() {
         "x-${RUNNER_NAME_PREFIX}runner-base: &runner_base" \
         "  image: \"${RUNNER_IMAGE}\"" \
         "  restart: unless-stopped" \
-        "  environment: &runner_env" \
-        "    RUNNER_ORG_URL: \"https://github.com/${ORG}${REPO:+/}${REPO}\"" \
-        "    RUNNER_TOKEN: \"${REG_TOKEN}\"" \
-        "    RUNNER_GROUP: \"${RUNNER_GROUP}\"" \
-        "    RUNNER_REMOVE_ON_STOP: \"false\"" \
-        "    DISABLE_AUTO_UPDATE: \"${DISABLE_AUTO_UPDATE}\"" \
-        "    RUNNER_WORKDIR: \"${RUNNER_WORKDIR}\"" \
-        "${extra_proxy_env[@]}" \
         "  network_mode: host" \
         "  privileged: true" \
         "" \
@@ -599,10 +556,8 @@ shell_generate_compose_file() {
         shell_append_csv_yaml_list "${COMPOSE_FILE}" "      " "${runner_groups}"
         printf '%s\n' \
             "    environment:" \
-            "      <<: *runner_env" \
-            "      RUNNER_NAME: \"${RUNNER_NAME_PREFIX}runner-${i}\"" \
             "      RUNNER_LABELS: \"${runner_labels}\"" \
-            "      RUNNER_INDEX: \"${i}\"" >> "${COMPOSE_FILE}"
+            "${extra_proxy_env[@]}" >> "${COMPOSE_FILE}"
         shell_append_semicolon_env_map "${COMPOSE_FILE}" "      " "${runner_env}"
         printf '%s\n' \
             "    volumes:" \
@@ -660,10 +615,38 @@ github_fetch_reg_token() {
     echo "${token}"
 }
 
+github_response_has_runner_list() {
+    local resp="$1"
+    if command -v jq >/dev/null 2>&1; then
+        echo "$resp" | jq -e '.runners | type == "array"' >/dev/null 2>&1
+    else
+        echo "$resp" | grep -q '"runners"[[:space:]]*:'
+    fi
+}
+
+github_print_api_error() {
+    local resp="$1" message documentation_url
+    if command -v jq >/dev/null 2>&1; then
+        message="$(echo "$resp" | jq -r '.message // empty' 2>/dev/null || true)"
+        documentation_url="$(echo "$resp" | jq -r '.documentation_url // empty' 2>/dev/null || true)"
+    else
+        message="$(echo "$resp" | sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+        documentation_url="$(echo "$resp" | sed -n 's/.*"documentation_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    fi
+
+    if [[ -n "$message" ]]; then
+        shell_warn "GitHub API did not return a runner list: ${message}"
+    else
+        shell_warn "GitHub API did not return a runner list. Check ORG/REPO, GH_PAT, and token permissions."
+    fi
+    [[ -n "$documentation_url" ]] && shell_warn "GitHub API documentation: ${documentation_url}"
+}
+
 github_get_runner_id_by_name() {
     local name="$1"
     local resp
     resp=$(github_api GET "/actions/runners?per_page=100") || return 1
+    github_response_has_runner_list "$resp" || { github_print_api_error "$resp"; return 1; }
     if command -v jq >/dev/null 2>&1; then
         echo "$resp" | jq -r --arg n "$name" '.runners[] | select(.name==$n) | .id' | head -1
     else
@@ -680,6 +663,7 @@ github_delete_all_runners_with_prefix() {
     local prefix="${RUNNER_NAME_PREFIX}runner-"
     local resp
     resp=$(github_api GET "/actions/runners?per_page=100" || echo "{}")
+    github_response_has_runner_list "$resp" || { github_print_api_error "$resp"; return 1; }
     if command -v jq >/dev/null 2>&1; then
         while IFS=$'\t' read -r id name; do
             [[ -n "$id" && "$id" != "null" ]] || continue
@@ -852,11 +836,21 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             echo "--------------------------------- Runners --------------------------------------------"
             resp=$(github_api GET "/actions/runners?per_page=100") || shell_die "Failed to fetch runner list."
             if command -v jq >/dev/null 2>&1; then
-                echo "$resp" | jq -r '.runners[] | [.name, .status, (if .busy then "busy" else "idle" end), ( [.labels[].name] | join(","))] | @tsv' \
-                    | grep -E "^${RUNNER_NAME_PREFIX}runner-" \
-                    | awk -F'\t' 'BEGIN{printf("%-40s %-8s %-6s %s\n","NAME","STATUS","BUSY","LABELS")}{printf("%-40s %-8s %-6s %s\n",$1,$2,$3,$4)}'
+                if github_response_has_runner_list "$resp"; then
+                    echo "$resp" | jq -r '.runners[] | [.name, .status, (if .busy then "busy" else "idle" end), ( [.labels[].name] | join(","))] | @tsv' \
+                        | grep -E "^${RUNNER_NAME_PREFIX}runner-" \
+                        | awk -F'\t' 'BEGIN{printf("%-40s %-8s %-6s %s\n","NAME","STATUS","BUSY","LABELS")}{printf("%-40s %-8s %-6s %s\n",$1,$2,$3,$4)}'
+                else
+                    github_print_api_error "$resp"
+                    exit 1
+                fi
             else
-                echo "$resp"
+                if github_response_has_runner_list "$resp"; then
+                    echo "$resp"
+                else
+                    github_print_api_error "$resp"
+                    exit 1
+                fi
             fi
             echo
             shell_info "Due to GitHub limitations, runner list is limited to 100 entries!"
@@ -900,7 +894,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         # ./runner.sh register [${RUNNER_NAME_PREFIX}runner-<id> ...]
         register)
             REG_TOKEN="$(shell_get_reg_token)"
-            shell_update_compose_file "RUNNER_TOKEN" "$REG_TOKEN"
 
             if [[ $# -ge 1 ]]; then
                 # Pass incoming parameters (container names or numbers) directly to docker_runner_register
