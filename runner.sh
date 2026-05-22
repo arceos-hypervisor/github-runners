@@ -92,6 +92,7 @@ shell_usage() {
 
   echo "1. Creation commands:"
   printf "  %-${COLW}s %s\n" "./runner.sh init -n N" "Generate docker-compose.yml then create runners and start"
+  printf "  %-${COLW}s %s\n" "./runner.sh add [-n N]" "Append N new runners after existing runner indexes"
   printf "  %-${COLW}s %s\n" "./runner.sh compose" "Regenerate docker-compose.yml with existing runners"
   echo
 
@@ -185,6 +186,54 @@ shell_get_indexed_env() {
     else
         printf '%s' "$default_value"
     fi
+}
+
+shell_parse_count_arg() {
+    local default_count="$1"; shift
+    local count="$default_count"
+
+    if [[ "${1:-}" == "-n" || "${1:-}" == "--count" ]]; then
+        shift
+        count="${1:-}"
+        [[ -n "$count" ]] || shell_die "Count is required after -n|--count!"
+        shift || true
+    fi
+    [[ "$count" =~ ^[0-9]+$ ]] || shell_die "Count must be numeric!"
+
+    PARSED_COUNT="$count"
+    PARSED_REMAINING_ARGS=("$@")
+}
+
+shell_runner_index_from_name() {
+    local name="$1" prefix="${RUNNER_NAME_PREFIX}runner-"
+    [[ "$name" == "${prefix}"* ]] || return 1
+
+    local index="${name#"$prefix"}"
+    [[ "$index" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$index"
+}
+
+shell_get_max_existing_runner_index() {
+    local name index max_index=0
+    local existing_names=()
+    mapfile -t existing_names < <(docker_list_existing_containers | sed '/^$/d') || true
+
+    if [[ -f "$COMPOSE_FILE" ]]; then
+        while IFS= read -r name; do
+            [[ -n "$name" ]] || continue
+            existing_names+=("$name")
+        done < <(sed -n -E 's/^  ([^[:space:]:]+):[[:space:]]*$/\1/p' "$COMPOSE_FILE" || true)
+    fi
+
+    for name in "${existing_names[@]}"; do
+        [[ -n "$name" ]] || continue
+        index="$(shell_runner_index_from_name "$name" || true)"
+        if [[ -n "$index" && "$index" -gt "$max_index" ]]; then
+            max_index="$index"
+        fi
+    done
+
+    printf '%s\n' "$max_index"
 }
 
 shell_append_csv_yaml_list() {
@@ -859,13 +908,9 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
         # ./runner.sh init -n|--count N
         init)
-            count=0
-            if [[ "${1:-}" == "-n" || "${1:-}" == "--count" ]]; then
-                shift
-                count="${1:-0}"
-                shift || true
-            fi
-            [[ "$count" =~ ^[0-9]+$ ]] || shell_die "Count must be numeric!"
+            shell_parse_count_arg 0 "$@"
+            count="$PARSED_COUNT"
+            set -- "${PARSED_REMAINING_ARGS[@]}"
 
             REG_TOKEN="$(shell_get_reg_token)"
 
@@ -878,6 +923,34 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             $DC -f "$COMPOSE_FILE" up -d "$@";
 
             docker_runner_register
+            ;;
+
+        # ./runner.sh add -n|--count N
+        add)
+            shell_parse_count_arg 1 "$@"
+            add_count="$PARSED_COUNT"
+            set -- "${PARSED_REMAINING_ARGS[@]}"
+            [[ "$add_count" -gt 0 ]] || shell_die "Add count must be greater than 0!"
+
+            current_max="$(shell_get_max_existing_runner_index)"
+            new_total=$((current_max + add_count))
+            new_names=()
+            for i in $(seq $((current_max + 1)) "$new_total"); do
+                new_names+=("${RUNNER_NAME_PREFIX}runner-${i}")
+            done
+
+            REG_TOKEN="$(shell_get_reg_token)"
+
+            RUNNER_IMAGE="$(shell_prepare_runner_image)";
+
+            shell_info "Adding ${add_count} runner(s): ${new_names[*]}"
+            shell_info "Regenerating $COMPOSE_FILE with ${new_total} total runner slots."
+
+            shell_generate_compose_file "$new_total"
+
+            $DC -f "$COMPOSE_FILE" up -d "$@" "${new_names[@]}";
+
+            docker_runner_register "${new_names[@]}"
             ;;
         
         # ./runner.sh compose

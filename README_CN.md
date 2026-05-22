@@ -18,7 +18,7 @@
 - 支持按 Runner 配置标签、设备、用户组、卷、环境变量和启动命令
 - 检测 `Dockerfile` 变更并自动重建自定义镜像
 - 缓存注册令牌以减少 GitHub API 请求
-- 提供完整生命周期命令：`init`、`compose`、`register`、`start`、`stop`、`restart`、`log`、`list`、`rm`、`purge`、`image`
+- 提供完整生命周期命令：`init`、`add`、`compose`、`register`、`start`、`stop`、`restart`、`log`、`list`、`rm`、`purge`、`image`
 
 ## 使用
 
@@ -42,6 +42,7 @@ chmod +x runner.sh
 | 命令 | 说明 |
 |------|------|
 | `./runner.sh init [-n N]` | 生成并启动 N 个 Runner |
+| `./runner.sh add [-n N]` | 在现有 Runner 编号之后继续追加 N 个 Runner |
 | `./runner.sh compose` | 基于已有 Runner 重新生成 compose 文件 |
 | `./runner.sh register [runner-<id> ...]` | 注册指定实例；不带参数则注册所有未配置实例 |
 | `./runner.sh start/stop/restart [runner-<id> ...]` | 启动/停止/重启容器 |

@@ -18,7 +18,7 @@ This repository provides scripts and tools for creating, managing, and registeri
 - Per-runner configuration for labels, devices, groups, volumes, environment variables, and commands
 - Automatic custom image rebuild when `Dockerfile` changes
 - Cached registration tokens to reduce GitHub API requests
-- Full lifecycle commands: `init`, `compose`, `register`, `start`, `stop`, `restart`, `log`, `list`, `rm`, `purge`, `image`
+- Full lifecycle commands: `init`, `add`, `compose`, `register`, `start`, `stop`, `restart`, `log`, `list`, `rm`, `purge`, `image`
 
 ## Usage
 
@@ -42,6 +42,7 @@ chmod +x runner.sh
 | Command | Description |
 |---------|-------------|
 | `./runner.sh init [-n N]` | Generate and start N runners |
+| `./runner.sh add [-n N]` | Append N new runners after the existing runner indexes |
 | `./runner.sh compose` | Regenerate compose file with existing runners |
 | `./runner.sh register [runner-<id> ...]` | Register specified instances; without arguments, registers all unconfigured instances |
 | `./runner.sh start/stop/restart [runner-<id> ...]` | Start/stop/restart containers |
