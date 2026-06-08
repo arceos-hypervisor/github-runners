@@ -42,7 +42,8 @@ chmod +x runner.sh
 | 命令 | 说明 |
 |------|------|
 | `./runner.sh init [-n N]` | 生成并启动 N 个 Runner |
-| `./runner.sh add [-n N]` | 在现有 Runner 编号之后继续追加 N 个 Runner |
+| `./runner.sh add [-n N]` | 在现有 Runner 编号之后继续追加 N 个自动编号 Runner |
+| `./runner.sh add <runner-name> [...]` | 新增一个或多个显式命名的 Runner |
 | `./runner.sh compose` | 基于已有 Runner 重新生成 compose 文件 |
 | `./runner.sh register [runner-<id> ...]` | 注册指定实例；不带参数则注册所有未配置实例 |
 | `./runner.sh start/stop/restart [runner-<id> ...]` | 启动/停止/重启容器 |
@@ -61,7 +62,7 @@ chmod +x runner.sh
 
 ### Runner 配置
 
-所有 Runner 都使用同一种命名格式：`${RUNNER_NAME_PREFIX}runner-N`。`-n` 控制 Runner 总数。默认 `RUNNER_*` 变量作用于所有 Runner，也可以追加 `_1`、`_2` 这类序号为单个 Runner 覆盖配置。
+自动编号 Runner 使用 `${RUNNER_NAME_PREFIX}runner-N` 命名。`add -n N` 会在现有最大编号之后追加 N 个自动编号 Runner；`add <runner-name> [...]` 会按给定名称创建 Runner。默认 `RUNNER_*` 变量作用于所有 Runner，也可以追加 `_1`、`_2` 这类序号为单个自动编号 Runner 覆盖配置。显式命名的 Runner 默认使用通用配置；如果其生成位置碰巧对应某个编号覆盖，也会使用该覆盖。
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|

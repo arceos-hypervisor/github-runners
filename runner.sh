@@ -92,7 +92,8 @@ shell_usage() {
 
   echo "1. Creation commands:"
   printf "  %-${COLW}s %s\n" "./runner.sh init -n N" "Generate docker-compose.yml then create runners and start"
-  printf "  %-${COLW}s %s\n" "./runner.sh add [-n N]" "Append N new runners after existing runner indexes"
+  printf "  %-${COLW}s %s\n" "./runner.sh add [-n N]" "Append N new numbered runners after existing runner indexes"
+  printf "  %-${COLW}s %s\n" "./runner.sh add <runner-name> [...]" "Add one or more runners with explicit names"
   printf "  %-${COLW}s %s\n" "./runner.sh compose" "Regenerate docker-compose.yml with existing runners"
   echo
 
@@ -211,6 +212,27 @@ shell_runner_index_from_name() {
     local index="${name#"$prefix"}"
     [[ "$index" =~ ^[0-9]+$ ]] || return 1
     printf '%s\n' "$index"
+}
+
+shell_numbered_runner_name() {
+    local index="$1"
+    printf '%srunner-%s\n' "$RUNNER_NAME_PREFIX" "$index"
+}
+
+shell_validate_runner_name() {
+    local name="${1:-}"
+    [[ -n "$name" ]] || shell_die "Runner name cannot be empty!"
+    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || \
+        shell_die "Invalid runner name: $name (allowed: letters, numbers, dot, underscore, dash; must start with a letter or number)"
+}
+
+shell_runner_name_exists_in_list() {
+    local needle="$1"; shift || true
+    local item
+    for item in "$@"; do
+        [[ "$item" == "$needle" ]] && return 0
+    done
+    return 1
 }
 
 shell_get_max_existing_runner_index() {
@@ -422,11 +444,17 @@ shell_delete_all_execute() {
 
     local prefix cont_list org_count=0 cont_count=0 resp
     prefix="${RUNNER_NAME_PREFIX}runner-"
+    local scope_names=()
+    mapfile -t scope_names < <(docker_list_existing_containers | sed '/^$/d') || true
 
     if command -v jq >/dev/null 2>&1; then
         resp=$(github_api GET "/actions/runners?per_page=100" || echo "{}")
         if github_response_has_runner_list "$resp"; then
-            org_count=$(echo "$resp" | jq -r --arg p "$prefix" '[.runners[] | select(.name|startswith($p))] | length' 2>/dev/null || echo 0)
+            if [[ ${#scope_names[@]} -gt 0 ]]; then
+                org_count=$(echo "$resp" | jq -r '[.runners[] | select(.name as $n | ($ARGS.positional | index($n)))] | length' --args "${scope_names[@]}" 2>/dev/null || echo 0)
+            else
+                org_count=$(echo "$resp" | jq -r --arg p "$prefix" '[.runners[] | select(.name|startswith($p))] | length' 2>/dev/null || echo 0)
+            fi
         else
             github_print_api_error "$resp"
         fi
@@ -498,7 +526,7 @@ shell_get_compose_file() {
     
     while IFS= read -r line; do
         # Check if we're entering the target service
-        if [[ "$line" =~ ^[[:space:]]*${service}:[[:space:]]*$ ]]; then
+        if [[ "$line" == "  ${service}:" ]]; then
             in_service=1
             in_env=0
             continue
@@ -545,6 +573,21 @@ shell_get_compose_file() {
 
 shell_generate_compose_file() {
     local runner_count=$1
+    local runner_names=()
+    local i
+
+    if [[ "$runner_count" -gt 0 ]]; then
+        for i in $(seq 1 "$runner_count"); do
+            runner_names+=("$(shell_numbered_runner_name "$i")")
+        done
+    fi
+
+    shell_generate_compose_file_for_names "${runner_names[@]}"
+}
+
+shell_generate_compose_file_for_names() {
+    local runner_names=("$@")
+    local runner_count="${#runner_names[@]}"
     local extra_proxy_env=()
     local kvm_gid="${RUNNER_KVM_GID:-}"
 
@@ -579,19 +622,23 @@ shell_generate_compose_file() {
         "services:" > "${COMPOSE_FILE}"
 
     # 生成 runners。差异通过 RUNNER_*_<index> 环境变量按实例覆盖。
-    local i runner_labels runner_devices runner_groups runner_env runner_volumes runner_command
-    for i in $(seq 1 "$runner_count"); do
-        runner_labels="$(shell_get_indexed_env "RUNNER_LABELS" "$i" "${RUNNER_LABELS}")"
-        runner_devices="$(shell_get_indexed_env "RUNNER_DEVICES" "$i" "${RUNNER_DEVICES}")"
-        runner_groups="$(shell_get_indexed_env "RUNNER_GROUP_ADD" "$i" "${RUNNER_GROUP_ADD}")"
-        runner_env="$(shell_get_indexed_env "RUNNER_ENV" "$i" "${RUNNER_ENV}")"
-        runner_volumes="$(shell_get_indexed_env "RUNNER_VOLUMES" "$i" "${RUNNER_VOLUMES}")"
-        runner_command="$(shell_get_indexed_env "RUNNER_COMMAND" "$i" "${RUNNER_COMMAND}")"
+    local i=0 runner_name runner_index runner_labels runner_devices runner_groups runner_env runner_volumes runner_command
+    for runner_name in "${runner_names[@]}"; do
+        i=$((i + 1))
+        runner_index="$(shell_runner_index_from_name "$runner_name" || true)"
+        [[ -n "$runner_index" ]] || runner_index="$i"
+
+        runner_labels="$(shell_get_indexed_env "RUNNER_LABELS" "$runner_index" "${RUNNER_LABELS}")"
+        runner_devices="$(shell_get_indexed_env "RUNNER_DEVICES" "$runner_index" "${RUNNER_DEVICES}")"
+        runner_groups="$(shell_get_indexed_env "RUNNER_GROUP_ADD" "$runner_index" "${RUNNER_GROUP_ADD}")"
+        runner_env="$(shell_get_indexed_env "RUNNER_ENV" "$runner_index" "${RUNNER_ENV}")"
+        runner_volumes="$(shell_get_indexed_env "RUNNER_VOLUMES" "$runner_index" "${RUNNER_VOLUMES}")"
+        runner_command="$(shell_get_indexed_env "RUNNER_COMMAND" "$runner_index" "${RUNNER_COMMAND}")"
 
         printf '%s\n' \
-            "  ${RUNNER_NAME_PREFIX}runner-${i}:" \
+            "  ${runner_name}:" \
             "    <<: *runner_base" \
-            "    container_name: \"${RUNNER_NAME_PREFIX}runner-${i}\"" \
+            "    container_name: \"${runner_name}\"" \
             "    command:" \
             "      - /bin/bash" \
             "      - -lc" \
@@ -610,8 +657,8 @@ shell_generate_compose_file() {
         shell_append_semicolon_env_map "${COMPOSE_FILE}" "      " "${runner_env}"
         printf '%s\n' \
             "    volumes:" \
-            "      - ${RUNNER_NAME_PREFIX}runner-${i}-data:/home/runner" \
-            "      - ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules:/etc/udev/rules.d" >> "${COMPOSE_FILE}"
+            "      - ${runner_name}-data:/home/runner" \
+            "      - ${runner_name}-udev-rules:/etc/udev/rules.d" >> "${COMPOSE_FILE}"
         shell_append_semicolon_yaml_list "${COMPOSE_FILE}" "      " "${runner_volumes}"
         printf '\n' >> "${COMPOSE_FILE}"
     done
@@ -619,12 +666,12 @@ shell_generate_compose_file() {
     # 生成 volumes
     echo "volumes:" >> ${COMPOSE_FILE}
     
-    for i in $(seq 1 "$runner_count"); do
+    for runner_name in "${runner_names[@]}"; do
         printf '%s\n' \
-            "  ${RUNNER_NAME_PREFIX}runner-${i}-data:" \
-            "    name: ${RUNNER_NAME_PREFIX}runner-${i}-data" \
-            "  ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules:" \
-            "    name: ${RUNNER_NAME_PREFIX}runner-${i}-udev-rules" >> "${COMPOSE_FILE}"
+            "  ${runner_name}-data:" \
+            "    name: ${runner_name}-data" \
+            "  ${runner_name}-udev-rules:" \
+            "    name: ${runner_name}-udev-rules" >> "${COMPOSE_FILE}"
     done
 }
 
@@ -713,12 +760,22 @@ github_delete_all_runners_with_prefix() {
     local resp
     resp=$(github_api GET "/actions/runners?per_page=100" || echo "{}")
     github_response_has_runner_list "$resp" || { github_print_api_error "$resp"; return 1; }
+    local scope_names=()
+    mapfile -t scope_names < <(docker_list_existing_containers | sed '/^$/d') || true
     if command -v jq >/dev/null 2>&1; then
-        while IFS=$'\t' read -r id name; do
-            [[ -n "$id" && "$id" != "null" ]] || continue
-            shell_info "Unregistering from GitHub: $name (id=$id)"
-            github_delete_runner_by_id "$id" || shell_warn "Failed to unregister $name on GitHub; please remove it manually via the GitHub web UI!"
-        done < <(echo "$resp" | jq -r --arg p "$prefix" '.runners[] | select(.name|startswith($p)) | "\(.id)\t\(.name)"')
+        if [[ ${#scope_names[@]} -gt 0 ]]; then
+            while IFS=$'\t' read -r id name; do
+                [[ -n "$id" && "$id" != "null" ]] || continue
+                shell_info "Unregistering from GitHub: $name (id=$id)"
+                github_delete_runner_by_id "$id" || shell_warn "Failed to unregister $name on GitHub; please remove it manually via the GitHub web UI!"
+            done < <(echo "$resp" | jq -r '.runners[] | select(.name as $n | ($ARGS.positional | index($n))) | "\(.id)\t\(.name)"' --args "${scope_names[@]}")
+        else
+            while IFS=$'\t' read -r id name; do
+                [[ -n "$id" && "$id" != "null" ]] || continue
+                shell_info "Unregistering from GitHub: $name (id=$id)"
+                github_delete_runner_by_id "$id" || shell_warn "Failed to unregister $name on GitHub; please remove it manually via the GitHub web UI!"
+            done < <(echo "$resp" | jq -r --arg p "$prefix" '.runners[] | select(.name|startswith($p)) | "\(.id)\t\(.name)"')
+        fi
     else
         shell_warn "jq is not installed; cannot batch-unregister on the organization side; will only remove local containers and volumes."
     fi
@@ -737,7 +794,7 @@ docker_pick_compose() {
 
 docker_list_existing_containers() {
     if [[ -f "$COMPOSE_FILE" ]]; then
-        $DC -f "$COMPOSE_FILE" ps --services --all | grep -F "${RUNNER_NAME_PREFIX}runner-" || true
+        $DC -f "$COMPOSE_FILE" config --services || true
     else
         docker ps -a --filter "name=${RUNNER_NAME_PREFIX}runner-" --format "{{.Names}}" || true
     fi
@@ -761,7 +818,7 @@ docker_print_existing_containers_status() {
 docker_container_exists() {
     local name="$1"
     if [[ -f "$COMPOSE_FILE" ]]; then
-        $DC -f "$COMPOSE_FILE" ps --services --all | grep -qx "$name" >/dev/null 2>&1
+        $DC -f "$COMPOSE_FILE" config --services | grep -qx "$name" >/dev/null 2>&1
     else
         docker ps -a --format '{{.Names}}' | grep -qx "$name" >/dev/null 2>&1
     fi
@@ -884,11 +941,16 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
             echo "--------------------------------- Runners --------------------------------------------"
             resp=$(github_api GET "/actions/runners?per_page=100") || shell_die "Failed to fetch runner list."
+            mapfile -t scope_names < <(docker_list_existing_containers | sed '/^$/d') || true
             if command -v jq >/dev/null 2>&1; then
                 if github_response_has_runner_list "$resp"; then
-                    echo "$resp" | jq -r '.runners[] | [.name, .status, (if .busy then "busy" else "idle" end), ( [.labels[].name] | join(","))] | @tsv' \
-                        | grep -E "^${RUNNER_NAME_PREFIX}runner-" \
-                        | awk -F'\t' 'BEGIN{printf("%-40s %-8s %-6s %s\n","NAME","STATUS","BUSY","LABELS")}{printf("%-40s %-8s %-6s %s\n",$1,$2,$3,$4)}'
+                    if [[ ${#scope_names[@]} -gt 0 ]]; then
+                        echo "$resp" | jq -r '.runners[] | select(.name as $n | ($ARGS.positional | index($n))) | [.name, .status, (if .busy then "busy" else "idle" end), ( [.labels[].name] | join(","))] | @tsv' --args "${scope_names[@]}" \
+                            | awk -F'\t' 'BEGIN{printf("%-40s %-8s %-6s %s\n","NAME","STATUS","BUSY","LABELS")}{printf("%-40s %-8s %-6s %s\n",$1,$2,$3,$4)}'
+                    else
+                        echo "$resp" | jq -r --arg p "${RUNNER_NAME_PREFIX}runner-" '.runners[] | select(.name|startswith($p)) | [.name, .status, (if .busy then "busy" else "idle" end), ( [.labels[].name] | join(","))] | @tsv' \
+                            | awk -F'\t' 'BEGIN{printf("%-40s %-8s %-6s %s\n","NAME","STATUS","BUSY","LABELS")}{printf("%-40s %-8s %-6s %s\n",$1,$2,$3,$4)}'
+                    fi
                 else
                     github_print_api_error "$resp"
                     exit 1
@@ -926,42 +988,57 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             ;;
 
         # ./runner.sh add -n|--count N
+        # ./runner.sh add runner-name [...]
         add)
-            shell_parse_count_arg 1 "$@"
-            add_count="$PARSED_COUNT"
-            set -- "${PARSED_REMAINING_ARGS[@]}"
-            [[ "$add_count" -gt 0 ]] || shell_die "Add count must be greater than 0!"
-
-            current_max="$(shell_get_max_existing_runner_index)"
-            new_total=$((current_max + add_count))
+            existing_names=()
+            mapfile -t existing_names < <(docker_list_existing_containers | sed '/^$/d') || true
             new_names=()
-            for i in $(seq $((current_max + 1)) "$new_total"); do
-                new_names+=("${RUNNER_NAME_PREFIX}runner-${i}")
-            done
+
+            if [[ "${1:-}" == "-n" || "${1:-}" == "--count" || $# -eq 0 ]]; then
+                shell_parse_count_arg 1 "$@"
+                add_count="$PARSED_COUNT"
+                set -- "${PARSED_REMAINING_ARGS[@]}"
+                [[ $# -eq 0 ]] || shell_die "Unexpected arguments after -n|--count: $*"
+                [[ "$add_count" -gt 0 ]] || shell_die "Add count must be greater than 0!"
+
+                current_max="$(shell_get_max_existing_runner_index)"
+                new_total=$((current_max + add_count))
+                for i in $(seq $((current_max + 1)) "$new_total"); do
+                    new_names+=("$(shell_numbered_runner_name "$i")")
+                done
+            else
+                for name in "$@"; do
+                    shell_validate_runner_name "$name"
+                    if shell_runner_name_exists_in_list "$name" "${existing_names[@]}" "${new_names[@]}"; then
+                        shell_die "Runner already exists or was specified more than once: $name"
+                    fi
+                    new_names+=("$name")
+                done
+                add_count="${#new_names[@]}"
+            fi
 
             REG_TOKEN="$(shell_get_reg_token)"
 
             RUNNER_IMAGE="$(shell_prepare_runner_image)";
 
             shell_info "Adding ${add_count} runner(s): ${new_names[*]}"
-            shell_info "Regenerating $COMPOSE_FILE with ${new_total} total runner slots."
+            all_names=("${existing_names[@]}" "${new_names[@]}")
+            shell_info "Regenerating $COMPOSE_FILE with ${#all_names[@]} total runner slots."
 
-            shell_generate_compose_file "$new_total"
+            shell_generate_compose_file_for_names "${all_names[@]}"
 
-            $DC -f "$COMPOSE_FILE" up -d "$@" "${new_names[@]}";
+            $DC -f "$COMPOSE_FILE" up -d "${new_names[@]}";
 
             docker_runner_register "${new_names[@]}"
             ;;
         
         # ./runner.sh compose
         compose)
-            cont_count=0
-            cont_list="$(docker_list_existing_containers)"
-            if [[ -n "$cont_list" ]]; then cont_count=$(echo "$cont_list" | wc -l | tr -d ' '); fi
-            shell_info "Regenerating $COMPOSE_FILE with ${cont_count} existing runners."
+            mapfile -t existing_names < <(docker_list_existing_containers | sed '/^$/d') || true
+            shell_info "Regenerating $COMPOSE_FILE with ${#existing_names[@]} existing runners."
             RUNNER_IMAGE="$(shell_prepare_runner_image)";
             REG_TOKEN="$(shell_get_reg_token)"
-            shell_generate_compose_file "$cont_count"
+            shell_generate_compose_file_for_names "${existing_names[@]}"
             ;;
 
         # ./runner.sh register [${RUNNER_NAME_PREFIX}runner-<id> ...]
@@ -1126,6 +1203,18 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     fi
                     shell_info "Removed: $name"
                 done
+                if [[ -f "$COMPOSE_FILE" ]]; then
+                    mapfile -t existing_names < <($DC -f "$COMPOSE_FILE" config --services || true)
+                    remaining_names=()
+                    for name in "${existing_names[@]}"; do
+                        if ! shell_runner_name_exists_in_list "$name" "${matched[@]}"; then
+                            remaining_names+=("$name")
+                        fi
+                    done
+                    RUNNER_IMAGE="$(shell_prepare_runner_image)";
+                    shell_info "Regenerating $COMPOSE_FILE with ${#remaining_names[@]} remaining runner slots."
+                    shell_generate_compose_file_for_names "${remaining_names[@]}"
+                fi
             fi
             ;;
 

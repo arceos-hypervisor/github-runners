@@ -42,7 +42,8 @@ chmod +x runner.sh
 | Command | Description |
 |---------|-------------|
 | `./runner.sh init [-n N]` | Generate and start N runners |
-| `./runner.sh add [-n N]` | Append N new runners after the existing runner indexes |
+| `./runner.sh add [-n N]` | Append N new numbered runners after the existing runner indexes |
+| `./runner.sh add <runner-name> [...]` | Add one or more runners with explicit names |
 | `./runner.sh compose` | Regenerate compose file with existing runners |
 | `./runner.sh register [runner-<id> ...]` | Register specified instances; without arguments, registers all unconfigured instances |
 | `./runner.sh start/stop/restart [runner-<id> ...]` | Start/stop/restart containers |
@@ -61,7 +62,7 @@ The default prefix automatically includes `ORG` (and `REPO` if set), formatted a
 
 ### Runner Configuration
 
-All runners use the same naming format, `${RUNNER_NAME_PREFIX}runner-N`. The `-n` option controls the total number of runners. Use the default `RUNNER_*` variables for all runners, and append an index such as `_1` or `_2` to override one runner.
+Numbered runners use the `${RUNNER_NAME_PREFIX}runner-N` format. `add -n N` appends N numbered runners after the highest existing index, while `add <runner-name> [...]` creates runners with explicit names. Use the default `RUNNER_*` variables for all runners, and append an index such as `_1` or `_2` to override one numbered runner. Explicitly named runners use the default values unless their generated position matches an indexed override.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
