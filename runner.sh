@@ -238,14 +238,7 @@ shell_runner_name_exists_in_list() {
 shell_get_max_existing_runner_index() {
     local name index max_index=0
     local existing_names=()
-    mapfile -t existing_names < <(docker_list_existing_containers | sed '/^$/d') || true
-
-    if [[ -f "$COMPOSE_FILE" ]]; then
-        while IFS= read -r name; do
-            [[ -n "$name" ]] || continue
-            existing_names+=("$name")
-        done < <(sed -n -E 's/^  ([^[:space:]:]+):[[:space:]]*$/\1/p' "$COMPOSE_FILE" || true)
-    fi
+    mapfile -t existing_names < <(docker_list_runner_services | sed '/^$/d') || true
 
     for name in "${existing_names[@]}"; do
         [[ -n "$name" ]] || continue
@@ -445,12 +438,14 @@ shell_delete_all_execute() {
     local prefix cont_list org_count=0 cont_count=0 resp
     prefix="${RUNNER_NAME_PREFIX}runner-"
     local scope_names=()
-    mapfile -t scope_names < <(docker_list_existing_containers | sed '/^$/d') || true
+    local use_compose_scope=0
+    [[ -f "$COMPOSE_FILE" ]] && use_compose_scope=1
+    mapfile -t scope_names < <(docker_list_runner_services | sed '/^$/d') || true
 
     if command -v jq >/dev/null 2>&1; then
         resp=$(github_api GET "/actions/runners?per_page=100" || echo "{}")
         if github_response_has_runner_list "$resp"; then
-            if [[ ${#scope_names[@]} -gt 0 ]]; then
+            if [[ $use_compose_scope -eq 1 ]]; then
                 org_count=$(echo "$resp" | jq -r '[.runners[] | select(.name as $n | ($ARGS.positional | index($n)))] | length' --args "${scope_names[@]}" 2>/dev/null || echo 0)
             else
                 org_count=$(echo "$resp" | jq -r --arg p "$prefix" '[.runners[] | select(.name|startswith($p))] | length' 2>/dev/null || echo 0)
@@ -591,6 +586,17 @@ shell_generate_compose_file_for_names() {
     local extra_proxy_env=()
     local kvm_gid="${RUNNER_KVM_GID:-}"
 
+    if [[ "$runner_count" -eq 0 ]]; then
+        printf '%s\n' \
+            "# 自动生成的 Docker Compose 配置" \
+            "# 机器名: $(hostname)" \
+            "# runner 数量: 0" \
+            "" \
+            "services: {}" \
+            "volumes: {}" > "${COMPOSE_FILE}"
+        return 0
+    fi
+
     # /dev/kvm 的权限检查是按数字 GID 生效
     # 优先使用宿主机当前 /dev/kvm 的实际 GID，必要时允许通过 RUNNER_KVM_GID 覆盖
     if [[ -z "$kvm_gid" ]]; then
@@ -643,9 +649,11 @@ shell_generate_compose_file_for_names() {
             "      - /bin/bash" \
             "      - -lc" \
             "      - |" \
-            "        exec ${runner_command}" \
-            "    devices:" >> "${COMPOSE_FILE}"
-        shell_append_device_yaml_list "${COMPOSE_FILE}" "      " "${runner_devices}"
+            "        exec ${runner_command}" >> "${COMPOSE_FILE}"
+        if [[ -n "$(shell_trim "$runner_devices")" ]]; then
+            printf '%s\n' "    devices:" >> "${COMPOSE_FILE}"
+            shell_append_device_yaml_list "${COMPOSE_FILE}" "      " "${runner_devices}"
+        fi
         printf '%s\n' \
             "    group_add:" \
             "      - ${kvm_gid}" >> "${COMPOSE_FILE}"
@@ -761,9 +769,11 @@ github_delete_all_runners_with_prefix() {
     resp=$(github_api GET "/actions/runners?per_page=100" || echo "{}")
     github_response_has_runner_list "$resp" || { github_print_api_error "$resp"; return 1; }
     local scope_names=()
-    mapfile -t scope_names < <(docker_list_existing_containers | sed '/^$/d') || true
+    local use_compose_scope=0
+    [[ -f "$COMPOSE_FILE" ]] && use_compose_scope=1
+    mapfile -t scope_names < <(docker_list_runner_services | sed '/^$/d') || true
     if command -v jq >/dev/null 2>&1; then
-        if [[ ${#scope_names[@]} -gt 0 ]]; then
+        if [[ $use_compose_scope -eq 1 ]]; then
             while IFS=$'\t' read -r id name; do
                 [[ -n "$id" && "$id" != "null" ]] || continue
                 shell_info "Unregistering from GitHub: $name (id=$id)"
@@ -792,9 +802,21 @@ docker_pick_compose() {
     fi
 }
 
-docker_list_existing_containers() {
+docker_list_runner_services() {
     if [[ -f "$COMPOSE_FILE" ]]; then
         $DC -f "$COMPOSE_FILE" config --services || true
+    else
+        docker ps -a --filter "name=${RUNNER_NAME_PREFIX}runner-" --format "{{.Names}}" || true
+    fi
+}
+
+docker_list_existing_containers() {
+    if [[ -f "$COMPOSE_FILE" ]]; then
+        local service
+        while IFS= read -r service; do
+            [[ -n "$service" ]] || continue
+            docker_container_exists "$service" && printf '%s\n' "$service"
+        done < <(docker_list_runner_services | sed '/^$/d')
     else
         docker ps -a --filter "name=${RUNNER_NAME_PREFIX}runner-" --format "{{.Names}}" || true
     fi
@@ -814,14 +836,19 @@ docker_print_existing_containers_status() {
     fi
 }
 
-# Check whether a specific container exists (local docker ps -a name match)
-docker_container_exists() {
+docker_runner_service_exists() {
     local name="$1"
     if [[ -f "$COMPOSE_FILE" ]]; then
         $DC -f "$COMPOSE_FILE" config --services | grep -qx "$name" >/dev/null 2>&1
     else
         docker ps -a --format '{{.Names}}' | grep -qx "$name" >/dev/null 2>&1
     fi
+}
+
+# Check whether a specific container exists (local docker ps -a name match)
+docker_container_exists() {
+    local name="$1"
+    docker ps -a --format '{{.Names}}' | grep -qx "$name" >/dev/null 2>&1
 }
 
 docker_remove_all_local_containers_and_volumes() {
@@ -853,7 +880,7 @@ docker_runner_register() {
     if [[ $# -gt 0 ]]; then
         names=("$@")
     else
-        mapfile -t names < <(docker_list_existing_containers | sed '/^$/d') || true
+        mapfile -t names < <(docker_list_runner_services | sed '/^$/d') || true
     fi
     if [[ ${#names[@]} -eq 0 ]]; then
         shell_info "No Runner containers to register!"
@@ -862,8 +889,8 @@ docker_runner_register() {
     
     local cname
     for cname in "${names[@]}"; do
-        if ! docker_container_exists "$cname"; then
-            shell_warn "Container does not exist: $cname (skipping)"
+        if ! docker_runner_service_exists "$cname"; then
+            shell_warn "Runner service does not exist: $cname (skipping)"
             continue
         fi
         
@@ -941,7 +968,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
             echo "--------------------------------- Runners --------------------------------------------"
             resp=$(github_api GET "/actions/runners?per_page=100") || shell_die "Failed to fetch runner list."
-            mapfile -t scope_names < <(docker_list_existing_containers | sed '/^$/d') || true
+            mapfile -t scope_names < <(docker_list_runner_services | sed '/^$/d') || true
             if command -v jq >/dev/null 2>&1; then
                 if github_response_has_runner_list "$resp"; then
                     if [[ ${#scope_names[@]} -gt 0 ]]; then
@@ -973,6 +1000,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             shell_parse_count_arg 0 "$@"
             count="$PARSED_COUNT"
             set -- "${PARSED_REMAINING_ARGS[@]}"
+            [[ $# -eq 0 ]] || shell_die "Unexpected arguments after -n|--count: $*"
+            [[ "$count" -gt 0 ]] || shell_die "Init count must be greater than 0!"
 
             REG_TOKEN="$(shell_get_reg_token)"
 
@@ -991,7 +1020,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         # ./runner.sh add runner-name [...]
         add)
             existing_names=()
-            mapfile -t existing_names < <(docker_list_existing_containers | sed '/^$/d') || true
+            mapfile -t existing_names < <(docker_list_runner_services | sed '/^$/d') || true
             new_names=()
 
             if [[ "${1:-}" == "-n" || "${1:-}" == "--count" || $# -eq 0 ]]; then
@@ -1034,7 +1063,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         
         # ./runner.sh compose
         compose)
-            mapfile -t existing_names < <(docker_list_existing_containers | sed '/^$/d') || true
+            mapfile -t existing_names < <(docker_list_runner_services | sed '/^$/d') || true
             shell_info "Regenerating $COMPOSE_FILE with ${#existing_names[@]} existing runners."
             RUNNER_IMAGE="$(shell_prepare_runner_image)";
             REG_TOKEN="$(shell_get_reg_token)"
@@ -1059,8 +1088,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             if [[ $# -ge 1 ]]; then
                 ids=()
                 for s in "$@"; do
-                    if ! docker_container_exists "$s"; then
-                        shell_warn "No Runner container found for $s, ignoring this argument!"
+                    if ! docker_runner_service_exists "$s"; then
+                        shell_warn "No Runner service found for $s, ignoring this argument!"
                         continue
                     fi
                     ids+=("$s")
@@ -1070,7 +1099,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     exit 0
                 fi
             else
-                mapfile -t ids < <(docker_list_existing_containers) || ids=()
+                mapfile -t ids < <(docker_list_runner_services) || ids=()
                 if [[ ${#ids[@]} -eq 0 ]]; then
                     shell_info "No Runner containers to start!"
                     exit 0
@@ -1089,8 +1118,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             if [[ $# -ge 1 ]]; then
                 ids=()
                 for s in "$@"; do
-                    if ! docker_container_exists "$s"; then
-                        shell_warn "No Runner container found for $s, ignoring this argument!"
+                    if ! docker_runner_service_exists "$s"; then
+                        shell_warn "No Runner service found for $s, ignoring this argument!"
                         continue
                     fi
                     ids+=("$s")
@@ -1100,7 +1129,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     exit 0
                 fi
             else
-                mapfile -t ids < <(docker_list_existing_containers) || ids=()
+                mapfile -t ids < <(docker_list_runner_services) || ids=()
                 if [[ ${#ids[@]} -eq 0 ]]; then
                     shell_info "No Runner containers to stop!"
                     exit 0
@@ -1119,8 +1148,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             if [[ $# -ge 1 ]]; then
                 ids=()
                 for s in "$@"; do
-                    if ! docker_container_exists "$s"; then
-                        shell_warn "No Runner container found for $s, ignoring this argument!"
+                    if ! docker_runner_service_exists "$s"; then
+                        shell_warn "No Runner service found for $s, ignoring this argument!"
                         continue
                     fi
                     ids+=("$s")
@@ -1130,7 +1159,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     exit 0
                 fi
             else
-                mapfile -t ids < <(docker_list_existing_containers) || ids=()
+                mapfile -t ids < <(docker_list_runner_services) || ids=()
                 if [[ ${#ids[@]} -eq 0 ]]; then
                     shell_info "No Runner containers to restart!"
                     exit 0
@@ -1148,7 +1177,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         log)
             [[ $# -eq 1 ]] || shell_die "Usage: ./runner.sh logs ${RUNNER_NAME_PREFIX}runner-<id>"
 
-            docker_container_exists "$1" || shell_die "Container $1 not found"
+            docker_runner_service_exists "$1" || shell_die "Runner service $1 not found"
 
             shell_info "Showing logs for: $1"
             if [[ -f "$COMPOSE_FILE" ]]; then
@@ -1170,8 +1199,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             else
                 matched=()
                 for s in "$@"; do
-                    if ! docker_container_exists "$s"; then
-                        shell_warn "No Runner container found for $s, ignoring this argument!"
+                    if ! docker_runner_service_exists "$s"; then
+                        shell_warn "No Runner service found for $s, ignoring this argument!"
                         continue
                     fi
                     matched+=("$s")
@@ -1194,6 +1223,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                     if [[ -f "$COMPOSE_FILE" ]]; then
                         # Stop and remove specific container using compose
                         $DC -f "$COMPOSE_FILE" rm -s -f -v "$name" >/dev/null 2>&1 || true
+                        docker volume rm "${name}-data" >/dev/null 2>&1 || true
+                        docker volume rm "${name}-udev-rules" >/dev/null 2>&1 || true
                     else
                         # Stop and remove container using docker
                         docker rm -f "$name" >/dev/null 2>&1 || true
