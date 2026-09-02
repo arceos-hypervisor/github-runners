@@ -817,6 +817,8 @@ docker_list_existing_containers() {
             [[ -n "$service" ]] || continue
             docker_container_exists "$service" && printf '%s\n' "$service"
         done < <(docker_list_runner_services | sed '/^$/d')
+        # A missing container is an expected result of this query, not an error.
+        return 0
     else
         docker ps -a --filter "name=${RUNNER_NAME_PREFIX}runner-" --format "{{.Names}}" || true
     fi
