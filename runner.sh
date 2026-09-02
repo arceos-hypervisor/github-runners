@@ -401,8 +401,8 @@ shell_prepare_runner_image() {
 
         if [[ -n "$new_hash" ]]; then
             [[ -f "$hash_file" ]] && old_hash=$(cat "$hash_file" 2>/dev/null || true)
-            if [[ "$new_hash" != "$old_hash" ]]; then
-                shell_info "Detected Dockerfile change, building ${RUNNER_CUSTOM_IMAGE} image" >&2
+            if [[ ! -f "$hash_file" || "$new_hash" != "$old_hash" ]]; then
+                shell_info "Detected Dockerfile change or missing hash file, building ${RUNNER_CUSTOM_IMAGE} image" >&2
                 if docker build -t "${RUNNER_CUSTOM_IMAGE}" . 1>&2; then
                     echo "$new_hash" > "$hash_file"
                     shell_info "Build complete. Will use ${RUNNER_CUSTOM_IMAGE} as image" >&2
